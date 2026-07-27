@@ -55,6 +55,10 @@ bool settingsSetWifiPassword(const char *password);
 const char *settingsApPassword();
 bool settingsSetApPassword(const char *password);
 
+// Save Ask PCM to /audio/*.wav on SD (uses PSRAM; default off).
+bool settingsSaveAudio();
+bool settingsSetSaveAudio(bool on);
+
 // SoftAP credentials derived from device name + AP password
 const char *settingsShareApSsid();
 const char *settingsShareApPassword();

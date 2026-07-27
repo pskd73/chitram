@@ -51,6 +51,7 @@ static char sDeviceName[SETTINGS_NAME_MAX] = "Chitram";
 static char sWifiSsid[SETTINGS_NAME_MAX] = WIFI_SSID;
 static char sWifiPassword[SETTINGS_WIFI_PASS_MAX] = WIFI_PASSWORD;
 static char sApPassword[SETTINGS_AP_PASS_MAX] = "chitram12";
+static bool sSaveAudio = false;
 static bool sReady = false;
 
 static int optionIndex(const SettingsOption *opts, int count, const char *id) {
@@ -122,6 +123,7 @@ static void useDefaults() {
   copyBounded(sWifiSsid, sizeof(sWifiSsid), WIFI_SSID);
   copyBounded(sWifiPassword, sizeof(sWifiPassword), WIFI_PASSWORD);
   copyBounded(sApPassword, sizeof(sApPassword), kDefaultApPassword);
+  sSaveAudio = false;
 }
 
 static bool extractJsonString(const String &raw, const char *key, String &out) {
@@ -165,6 +167,32 @@ static bool extractJsonString(const String &raw, const char *key, String &out) {
   return true;
 }
 
+static bool extractJsonBool(const String &raw, const char *key, bool &out) {
+  String needle = String("\"") + key + "\"";
+  int keyPos = raw.indexOf(needle);
+  if (keyPos < 0) {
+    return false;
+  }
+  int colon = raw.indexOf(':', keyPos + needle.length());
+  if (colon < 0) {
+    return false;
+  }
+  int i = colon + 1;
+  while (i < (int)raw.length() &&
+         (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\n')) {
+    ++i;
+  }
+  if (raw.startsWith("true", i)) {
+    out = true;
+    return true;
+  }
+  if (raw.startsWith("false", i)) {
+    out = false;
+    return true;
+  }
+  return false;
+}
+
 static void appendJsonString(File &f, const char *s) {
   if (!s) {
     return;
@@ -200,7 +228,9 @@ static bool saveToFs() {
   appendJsonString(f, sWifiPassword);
   f.print("\",\"ap_password\":\"");
   appendJsonString(f, sApPassword);
-  f.print("\"}\n");
+  f.print("\",\"save_audio\":");
+  f.print(sSaveAudio ? "true" : "false");
+  f.print("}\n");
   f.close();
   return true;
 }
@@ -278,6 +308,12 @@ static bool loadFromFs() {
       copyBounded(sApPassword, sizeof(sApPassword), val.c_str());
       any = true;
     }
+  }
+
+  bool saveAudio = false;
+  if (extractJsonBool(raw, "save_audio", saveAudio)) {
+    sSaveAudio = saveAudio;
+    any = true;
   }
 
   return any;
@@ -511,6 +547,24 @@ bool settingsSetApPassword(const char *password) {
     return false;
   }
   Serial.println("settings: ap_password updated");
+  return true;
+}
+
+bool settingsSaveAudio() {
+  ensureReady();
+  return sSaveAudio;
+}
+
+bool settingsSetSaveAudio(bool on) {
+  ensureReady();
+  if (sSaveAudio == on) {
+    return true;
+  }
+  sSaveAudio = on;
+  if (!saveToFs()) {
+    return false;
+  }
+  Serial.printf("settings: save_audio=%d\n", (int)sSaveAudio);
   return true;
 }
 

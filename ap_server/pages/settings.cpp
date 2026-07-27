@@ -38,6 +38,11 @@ static const char kSettingsHtml[] = R"HTML(
         <input class="input input-bordered w-full" type="password" name="ap_password" required minlength="8" maxlength="63" value="{{ap_password}}" autocomplete="off">
         <span class="label"><span class="label-text-alt">SoftAP password · at least 8 characters · applies next time Web Wi‑Fi starts</span></span>
       </label>
+      <label class="label cursor-pointer justify-start gap-3 py-1">
+        <input type="checkbox" class="checkbox checkbox-primary" name="save_audio" value="1" {{save_audio_checked}}>
+        <span class="label-text">Save Ask audio to SD card</span>
+      </label>
+      <span class="label-text-alt text-base-content/60 -mt-2">Writes /audio/*.wav when Ask listens · uses extra PSRAM · default off</span>
       <button class="btn btn-primary mt-2" type="submit">Save</button>
     </form>
     <h2 class="settings-sub">Generation</h2>
@@ -107,11 +112,12 @@ static void renderSettings(WebServer &server, const char *status) {
       {"wifi_ssid", wifiEsc.c_str()},
       {"wifi_password", wifiPassEsc.c_str()},
       {"ap_password", apPassEsc.c_str()},
+      {"save_audio_checked", settingsSaveAudio() ? "checked" : ""},
       {"model", model ? model : settingsImageModel()},
       {"aspect", aspect ? aspect : settingsAspectRatio()},
       {"resolution", resolution ? resolution : settingsResolution()},
   };
-  apSendTemplate(server, kSettingsHtml, vars, 11);
+  apSendTemplate(server, kSettingsHtml, vars, 12);
 }
 
 static void handleSettingsGet(WebServer &server) {
@@ -139,6 +145,8 @@ static void handleSettingsPost(WebServer &server) {
   if (server.hasArg("ap_password")) {
     ok = settingsSetApPassword(server.arg("ap_password").c_str()) && ok;
   }
+  // Unchecked checkboxes are omitted from POST bodies.
+  ok = settingsSetSaveAudio(server.hasArg("save_audio")) && ok;
   apRedirect(server, ok ? "/settings?saved=1" : "/settings?err=1");
 }
 

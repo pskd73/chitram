@@ -1,11 +1,13 @@
 #include "ask_window.h"
 
+#include "audio_rec.h"
 #include "config.h"
 #include "deepgram.h"
 #include "display.h"
 #include "input.h"
 #include "mic.h"
 #include "net_services.h"
+#include "settings.h"
 #include "status_window.h"
 #include "ui_clip.h"
 #include "ui_text.h"
@@ -66,6 +68,8 @@ private:
   void startListening();
   void stopListening();
   void abortListening();
+  void finishListeningCapture();
+  void failListening(const char *err);
   void doGenerate();
   void goHome();
 
@@ -97,14 +101,7 @@ String AskWindow::combinedTranscript() const {
   // Deepgram emits multiple is_final segments per utterance — use the
   // accumulated finalText, plus any live interim hypothesis.
   if (state_ == AskState::Listening || state_ == AskState::Connecting) {
-    String t = deepgramFinalText();
-    if (deepgramInterimText().length()) {
-      if (t.length()) {
-        t += ' ';
-      }
-      t += deepgramInterimText();
-    }
-    return t;
+    return deepgramCopyListeningText();
   }
   if (transcript_.length()) {
     return transcript_;
@@ -188,6 +185,7 @@ void AskWindow::startListening() {
   displayResetTranscriptCache();
   draw();
 
+#if !defined(CHITRAM_AUDIO_ONLY)
   if (WiFi.status() != WL_CONNECTED) {
     inputLog("ask: wifi...");
     gWindows.push(windowWifiConnecting());
@@ -200,12 +198,10 @@ void AskWindow::startListening() {
       return;
     }
   }
+#endif
 
-  micResetSession();
-  micSetDiscardSamples(SAMPLE_RATE / 4);
-  resetAudioDsp();
-
-  inputLog("ask: mic...");
+  // Probe mic channel only (no capture tasks yet — save RAM for TLS).
+  inputLog("ask: mic probe...");
   if (!chooseMicChannel()) {
     state_ = AskState::Error;
     error_ = "Mic init failed";
@@ -213,8 +209,13 @@ void AskWindow::startListening() {
     return;
   }
 
-  resetAudioDsp();
+#if defined(CHITRAM_AUDIO_ONLY)
+  inputLog("ask: AUDIO ONLY — ring → SD (no Deepgram)");
+#else
+  // Connect Deepgram BEFORE starting capture (needs internal heap for TLS).
   inputLog("ask: deepgram...");
+  Serial.printf("pre-dg heap=%u maxAlloc=%u\n", (unsigned)ESP.getFreeHeap(),
+                (unsigned)ESP.getMaxAllocHeap());
   if (!connectDeepgram()) {
     stopI2S();
     state_ = AskState::Error;
@@ -222,6 +223,30 @@ void AskWindow::startListening() {
     draw();
     return;
   }
+  Serial.printf("post-dg heap=%u\n", (unsigned)ESP.getFreeHeap());
+#endif
+
+  if (settingsSaveAudio()) {
+    if (!audioRecBegin()) {
+#if defined(CHITRAM_AUDIO_ONLY)
+      stopI2S();
+      state_ = AskState::Error;
+      error_ = "SD record failed";
+      draw();
+      return;
+#else
+      inputLog("ask: audio rec failed (continuing without SD)");
+#endif
+    }
+  } else {
+    inputLog("ask: SD audio save off");
+  }
+
+  micResetSession();
+  micSetDiscardSamples(SAMPLE_RATE / 4);
+  resetAudioDsp();
+  micSetStreamFlush(flushPcmToDeepgram);
+  micStartCapture(); // also starts egress
 
   state_ = AskState::Listening;
   listenStartedMs_ = millis();
@@ -230,15 +255,43 @@ void AskWindow::startListening() {
   heardSound_ = false;
   lastBubbleText_ = "";
   lastActivityText_ = "";
+#if defined(CHITRAM_AUDIO_ONLY)
+  inputLog("ask: recording — press ok to stop");
+#else
   inputLog("ask: listening — ok to stop");
+#endif
   draw();
 }
 
 void AskWindow::abortListening() {
-  micFlushPending(flushPcmToDeepgram);
-  stopI2S();
+  finishListeningCapture();
+#if !defined(CHITRAM_AUDIO_ONLY)
   closeDeepgram();
+#endif
   state_ = AskState::Idle;
+}
+
+void AskWindow::finishListeningCapture() {
+  // Stops capture + drains egress (Deepgram/SD buffer), then tears down I2S.
+  micFlushPending(flushPcmToDeepgram);
+  if (audioRecActive()) {
+    char path[40];
+    audioRecEnd(path, sizeof(path));
+    if (path[0]) {
+      inputLog("ask: saved %s", path);
+    }
+  }
+  stopI2S();
+}
+
+void AskWindow::failListening(const char *err) {
+  finishListeningCapture();
+#if !defined(CHITRAM_AUDIO_ONLY)
+  closeDeepgram();
+#endif
+  state_ = AskState::Error;
+  error_ = err ? err : "Error";
+  drawContentArea();
 }
 
 void AskWindow::stopListening() {
@@ -247,15 +300,18 @@ void AskWindow::stopListening() {
   }
   inputLog("ask: stop");
 
-  // Flip UI state first so the next frame isn't "Listening..."
   state_ = AskState::Done;
   menuFocus_ = 0;
   lastBubbleText_ = "";
 
-  // Cut mic immediately
-  stopI2S();
-  micFlushPending(flushPcmToDeepgram);
+  finishListeningCapture();
 
+#if defined(CHITRAM_AUDIO_ONLY)
+  transcript_ = "Saved to /audio (see serial)";
+  drawContentArea();
+  inputLog("ask: audio-only done");
+  return;
+#else
   if (deepgramInterimText().length()) {
     if (deepgramFinalText().length()) {
       deepgramFinalText() += ' ';
@@ -266,11 +322,9 @@ void AskWindow::stopListening() {
   }
   transcript_ = deepgramFinalText();
 
-  // Show Done UI before finalize wait (avoid sitting on "Listening...")
   drawContentArea();
   String shown = transcript_;
 
-  // Short finalize so last words can arrive without a multi-second stall
   deepgramFinalizeAndClose(400, 200);
 
   if (deepgramInterimText().length()) {
@@ -282,7 +336,6 @@ void AskWindow::stopListening() {
     deepgramInterimText() = "";
   }
   transcript_ = deepgramFinalText();
-  // Only repaint if finalize added text — avoids double menu flash
   if (transcript_ != shown) {
     lastBubbleText_ = "";
     drawContentArea();
@@ -290,6 +343,7 @@ void AskWindow::stopListening() {
 
   inputLog("ask: done len=%u text=\"%s\"", (unsigned)transcript_.length(),
            transcript_.c_str());
+#endif
 }
 
 void AskWindow::goHome() {
@@ -371,8 +425,13 @@ void AskWindow::paintListeningLayout(int ox, int oy) {
   st.color = ILI9341_CYAN;
   st.flags = TextFlagNoWrap | TextFlagTruncate;
   st.maxLines = 1;
-  TextMetrics m =
-      Text::draw("Listening...", (int16_t)(ox + kUiPadX), labelY_, maxW, st);
+  TextMetrics m = Text::draw(
+#if defined(CHITRAM_AUDIO_ONLY)
+      "Recording to SD...",
+#else
+      "Listening...",
+#endif
+      (int16_t)(ox + kUiPadX), labelY_, maxW, st);
 
   bubbleY_ = (int16_t)(m.nextY + 10);
   const int16_t bubbleW = maxW;
@@ -485,40 +544,40 @@ void AskWindow::onTick() {
     return;
   }
 
+#if !defined(CHITRAM_AUDIO_ONLY)
   deepgramPoll();
 
   if (!deepgramConnected() || !deepgramSocketAvailable()) {
     inputLog("ask: STT dropped");
-    stopI2S();
-    closeDeepgram();
-    state_ = AskState::Error;
-    error_ = "STT disconnected";
-    drawContentArea();
+    failListening("STT disconnected");
     return;
   }
+#endif
 
   if (!pollMicAndStream()) {
     inputLog("ask: mic/stream error");
-    stopI2S();
-    closeDeepgram();
-    state_ = AskState::Error;
-    error_ = "Mic/stream error";
-    drawContentArea();
+    failListening("Mic/stream error");
     return;
   }
 
   uint32_t now = millis();
 
-  // Prefer STT growth for endpointing — mic AGC keeps ambient peaks high.
-  // Strong mic peaks still count as speech.
   int16_t peak = micTakeLivePeak();
-  String activity = deepgramFinalText();
-  if (deepgramInterimText().length()) {
-    if (activity.length()) {
-      activity += ' ';
-    }
-    activity += deepgramInterimText();
+#if defined(CHITRAM_AUDIO_ONLY)
+  static uint32_t lastDiagMs = 0;
+  if (now - lastDiagMs >= 500) {
+    lastDiagMs = now;
+    inputLog("rec peak=%d pending=%u bytes=%lu g=%.1f", (int)peak,
+             (unsigned)micPendingSamples(),
+             (unsigned long)audioRecBytes(), micDspGain());
   }
+  const bool loudPeak = peak >= SILENCE_SOUND_PEAK;
+  if (loudPeak) {
+    lastSoundMs_ = now;
+    heardSound_ = true;
+  }
+#else
+  String activity = deepgramCopyListeningText();
   const bool sttGrew =
       activity.length() && activity != lastActivityText_;
   const bool loudPeak = peak >= SILENCE_SOUND_PEAK;
@@ -531,22 +590,26 @@ void AskWindow::onTick() {
   }
 
   if (deepgramTakeUtteranceEnd() &&
-      (deepgramFinalText().length() || deepgramInterimText().length() ||
-       lastActivityText_.length())) {
+      (activity.length() || lastActivityText_.length())) {
     inputLog("ask: utterance end — stop");
     stopListening();
     return;
   }
+#endif
 
   if (heardSound_ && (now - lastSoundMs_) >= SILENCE_STOP_MS) {
+#if !defined(CHITRAM_AUDIO_ONLY)
     inputLog("ask: silence %lums — stop", (unsigned long)(now - lastSoundMs_));
     stopListening();
     return;
+#endif
   }
 
   if (now - lastUiMs_ > 200) {
     lastUiMs_ = now;
+#if !defined(CHITRAM_AUDIO_ONLY)
     updateBubbleIfNeeded();
+#endif
   }
 
   if (now - listenStartedMs_ >= MAX_LISTEN_MS) {

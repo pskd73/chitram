@@ -19,5 +19,7 @@ String &deepgramInterimText();
 String &deepgramLastFinalText();
 void deepgramClearText();
 size_t deepgramFinalLength();
+// Thread-safe snapshot for UI while dg_io task is running.
+String deepgramCopyListeningText();
 // True once after Deepgram UtteranceEnd (clears the latch).
 bool deepgramTakeUtteranceEnd();

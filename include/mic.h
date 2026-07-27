@@ -21,9 +21,20 @@ int16_t micTakeLivePeak();
 int32_t micRawPeakAbs();
 float micDspGain();
 
-// Fill internal stream buffer from I2S; may call flushCb when a chunk is full.
 using MicFlushFn = bool (*)(const int16_t *samples, size_t count);
+
+// Register flush used by the egress task (SD buffer + Deepgram send).
+void micSetStreamFlush(MicFlushFn fn);
+
+// Non-blocking when egress is running (UI-safe).
 bool micPollAndMaybeFlush(MicFlushFn flushCb);
 
 size_t micPendingSamples();
+// Stop capture, drain ring via egress, wait until empty.
 bool micFlushPending(MicFlushFn flushCb);
+
+// Capture (core 1) + egress (core 0) tasks.
+void micStartCapture();
+void micStopCapture();
+void micStartEgress();
+void micStopEgressAndDrain();

@@ -18,8 +18,9 @@ enum SettingsRow : int {
   kRowAspect = 1,
   kRowResolution = 2,
   kRowShare = 3,
-  kRowClearGallery = 4,
-  kRowCount = 5,
+  kRowSaveAudio = 4,
+  kRowClearGallery = 5,
+  kRowCount = 6,
 };
 
 static const int kModelCap = 8;
@@ -262,6 +263,11 @@ void SettingsWindow::paintRow(int index, bool focused) {
     value = shareSub;
     iconId = "wifi";
     break;
+  case kRowSaveAudio:
+    title = "Save audio to SD";
+    value = settingsSaveAudio() ? "On" : "Off";
+    iconId = "storage";
+    break;
   case kRowClearGallery:
     title = "Clear Gallery";
     value = "Delete all photos";
@@ -320,7 +326,11 @@ void SettingsWindow::openRow(int index) {
     gWindows.push(&sResPicker);
     break;
   case kRowShare:
-    // Password is hardcoded for now — row is informational
+    // SoftAP credentials — informational (edit via Web settings)
+    break;
+  case kRowSaveAudio:
+    settingsSetSaveAudio(!settingsSaveAudio());
+    paintRow(kRowSaveAudio, true);
     break;
   case kRowClearGallery:
     gWindows.push(&sClearGallery);

@@ -67,17 +67,27 @@
 #define BTN_LONG_MS 800
 #define IMAGE_HOLD_MS 8000
 
-#define SAMPLE_RATE 16000
+#define SAMPLE_RATE 8000
+// Small PSRAM rings — Deepgram needs internal RAM for TLS
+#define MIC_RING_SECONDS 1
+#define MIC_RING_SAMPLES (SAMPLE_RATE * MIC_RING_SECONDS)
+// ~100 ms PCM per WS frame at 8 kHz
 #define STREAM_CHUNK_SAMPLES 800
+#define AUDIO_REC_MAX_SECONDS 15
 #define MAX_LISTEN_MS (5UL * 60UL * 1000UL)
 // Auto-stop Ask listen after this much with no new speech (post first speech)
 #define SILENCE_STOP_MS 2000UL
-// Mic peak must reach this to count as sound (AGC targets ~9000; ambient is higher than 500)
-#define SILENCE_SOUND_PEAK 4000
+// Mic peak must reach this to count as sound (AGC targets ~7000)
+#define SILENCE_SOUND_PEAK 3500
 
-#define AGC_TARGET_PEAK 9000.0f
+// Gentler AGC — avoid amplifying hiss in quiet rooms
+#define AGC_TARGET_PEAK 7000.0f
 #define AGC_GAIN_MIN 1.0f
-#define AGC_GAIN_MAX 12.0f
+#define AGC_GAIN_MAX 5.0f
+#define AGC_GAIN_SLEW 0.0012f
+
+// Temp: skip WiFi/Deepgram — mic ring → SD WAV only (Ask = record test).
+// #define CHITRAM_AUDIO_ONLY 1
 
 #define OR_HOST "openrouter.ai"
 #define OR_IMAGE_PATH "/api/v1/images"
@@ -87,6 +97,6 @@
 
 #define DG_HOST "api.deepgram.com"
 #define DG_PATH                                                                \
-  "/v1/listen?encoding=linear16&sample_rate=16000&channels=1&model=nova-3&"    \
+  "/v1/listen?encoding=linear16&sample_rate=8000&channels=1&model=nova-3&"     \
   "language=en&interim_results=true&punctuate=true&smart_format=true&"         \
-  "endpointing=400&utterance_end_ms=2000&vad_events=true"
+  "endpointing=1000&utterance_end_ms=2500&vad_events=true"
