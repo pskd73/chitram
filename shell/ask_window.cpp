@@ -5,6 +5,7 @@
 #include "deepgram.h"
 #include "display.h"
 #include "input.h"
+#include "menu.h"
 #include "mic.h"
 #include "net_services.h"
 #include "settings.h"
@@ -25,8 +26,11 @@ enum class AskState : uint8_t {
   Error,
 };
 
-static const char *kDoneMenu[] = {"Generate", "Ask again", "Home"};
-static const char *kDoneMenuIcons[] = {"image", "chat", "home"};
+static MenuItem kDoneMenuItems[] = {
+    {"Generate", 0, "image", false, nullptr},
+    {"Ask again", 1, "chat", false, nullptr},
+    {"Home", 2, "home", false, nullptr},
+};
 static const int kDoneMenuN = 3;
 static const uint16_t kBubbleBg = 0xE71C;   // light gray (iMessage-ish)
 static const uint16_t kBubbleFg = 0x18C3;   // dark text
@@ -59,11 +63,11 @@ private:
   String lastActivityText_; // last interim/final seen (activity for silence)
   String transcript_; // kept after STT closes / image gen clears deepgram
   char sourcePath_[48] = {};
-  int menuFocus_ = 0;
   int16_t labelY_ = 0;
   int16_t bubbleY_ = 0;
   int16_t bubbleH_ = 0;
   int16_t menuY_ = 0;
+  Menu doneMenu_;
 
   void startListening();
   void stopListening();
@@ -82,11 +86,24 @@ private:
   void paintErrorLayout(int ox, int oy);
   void paintConnecting(int ox, int oy);
   void updateBubbleIfNeeded();
-  void paintMenu();
-  int menuRowH() const { return 8 * kUiMenuSize + 10; }
+  void setupDoneMenu();
+  void paintDoneMenu();
 };
 
 static AskWindow sAsk;
+
+void AskWindow::setupDoneMenu() {
+  doneMenu_.setItems(kDoneMenuItems, kDoneMenuN);
+  doneMenu_.setWrapNavigation(true);
+  doneMenu_.setPadX(kUiPadX);
+  doneMenu_.setClip(kWinTitleH, tft.height());
+  doneMenu_.resetFocus();
+}
+
+void AskWindow::paintDoneMenu() {
+  doneMenu_.setClip(contentTop(), tft.height());
+  doneMenu_.draw(menuY_);
+}
 
 void AskWindow::setSourcePath(const char *path) {
   if (!path || !path[0]) {
@@ -165,7 +182,7 @@ void AskWindow::onEnter() {
   Window::onEnter();
   error_ = nullptr;
   lastBubbleText_ = "";
-  menuFocus_ = 0;
+  setupDoneMenu();
   startListening();
 }
 
@@ -180,7 +197,7 @@ void AskWindow::startListening() {
   error_ = nullptr;
   lastBubbleText_ = "";
   transcript_ = "";
-  menuFocus_ = 0;
+  setupDoneMenu();
   deepgramClearText();
   displayResetTranscriptCache();
   draw();
@@ -301,7 +318,7 @@ void AskWindow::stopListening() {
   inputLog("ask: stop");
 
   state_ = AskState::Done;
-  menuFocus_ = 0;
+  doneMenu_.resetFocus();
   lastBubbleText_ = "";
 
   finishListeningCapture();
@@ -448,44 +465,6 @@ void AskWindow::paintListeningLayout(int ox, int oy) {
   lastBubbleText_ = text;
 }
 
-void AskWindow::paintMenu() {
-  const int rowH = menuRowH();
-  const int rowW = tft.width() - 2 * kUiPadX;
-  for (int i = 0; i < kDoneMenuN; ++i) {
-    const int y = menuY_ + i * rowH;
-    if (y + rowH <= contentTop() || y >= tft.height()) {
-      continue;
-    }
-    const bool focused = (i == menuFocus_);
-    uint16_t bg = focused ? 0x3A2A : 0x18C3;
-    uint16_t fg = focused ? ILI9341_YELLOW : ILI9341_WHITE;
-    reclaimDisplay();
-    tft.fillRoundRect(kUiPadX, y, rowW, rowH - 2, 4, bg);
-    if (focused) {
-      tft.drawRoundRect(kUiPadX, y, rowW, rowH - 2, 4, ILI9341_CYAN);
-    }
-
-    const char *iconId = kDoneMenuIcons[i];
-    const bool hasIcon = iconId && iconId[0] && Icon::exists(iconId);
-    const int iconPad = hasIcon ? (Icon::kSize + 8) : 0;
-    if (hasIcon) {
-      const int iconY = y + ((rowH - 2) - Icon::kSize) / 2;
-      Icon(iconId).draw((int16_t)(kUiPadX + kUiMenuItemPadX), (int16_t)iconY,
-                        fg, bg);
-    }
-
-    TextStyle st;
-    st.size = kUiMenuSize;
-    st.color = fg;
-    st.flags = TextFlagNoWrap | TextFlagTruncate;
-    st.maxLines = 1;
-    Text::draw(kDoneMenu[i],
-               (int16_t)(kUiPadX + kUiMenuItemPadX + iconPad),
-               (int16_t)(y + 5),
-               (int16_t)(rowW - 2 * kUiMenuItemPadX - iconPad), st);
-  }
-}
-
 void AskWindow::paintDoneLayout(int ox, int oy) {
   const int16_t maxW = (int16_t)(tft.width() - 2 * kUiPadX);
   const int16_t bubbleX = (int16_t)(ox + kUiPadX);
@@ -495,7 +474,7 @@ void AskWindow::paintDoneLayout(int ox, int oy) {
   const int16_t innerW = (int16_t)(maxW - 2 * kBubblePad);
   bubbleH_ = measureBubbleHeight(text.c_str(), innerW);
 
-  const int menuBlock = kDoneMenuN * menuRowH() + 8;
+  const int menuBlock = doneMenu_.contentHeight() + 8;
   const int maxBubble = tft.height() - bubbleY_ - menuBlock;
   if (bubbleH_ > maxBubble && maxBubble > 40) {
     bubbleH_ = (int16_t)maxBubble;
@@ -505,7 +484,7 @@ void AskWindow::paintDoneLayout(int ox, int oy) {
   lastBubbleText_ = text;
 
   menuY_ = (int16_t)(bubbleY_ + bubbleH_ + 12);
-  paintMenu();
+  paintDoneMenu();
 }
 
 void AskWindow::updateBubbleIfNeeded() {
@@ -635,26 +614,11 @@ bool AskWindow::onEvent(JoyEvent e) {
   }
 
   if (state_ == AskState::Done) {
-    if (e == JoyEvent::Up || e == JoyEvent::Left) {
-      int prev = menuFocus_;
-      menuFocus_ = (menuFocus_ + kDoneMenuN - 1) % kDoneMenuN;
-      if (prev != menuFocus_) {
-        paintMenu();
-      }
-      return true;
-    }
-    if (e == JoyEvent::Down || e == JoyEvent::Right) {
-      int prev = menuFocus_;
-      menuFocus_ = (menuFocus_ + 1) % kDoneMenuN;
-      if (prev != menuFocus_) {
-        paintMenu();
-      }
-      return true;
-    }
     if (e == JoyEvent::Ok) {
-      if (menuFocus_ == 0) {
+      const int focus = doneMenu_.focusedIndex();
+      if (focus == 0) {
         doGenerate();
-      } else if (menuFocus_ == 1) {
+      } else if (focus == 1) {
         startListening();
       } else {
         goHome();
@@ -664,6 +628,13 @@ bool AskWindow::onEvent(JoyEvent e) {
     if (e == JoyEvent::Back) {
       goHome();
       return true; // already popped
+    }
+    bool moved = false;
+    if (doneMenu_.onEvent(e, &moved)) {
+      if (moved) {
+        paintDoneMenu();
+      }
+      return true;
     }
     return true;
   }

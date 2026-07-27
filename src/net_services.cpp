@@ -10,6 +10,7 @@
 #include <TJpg_Decoder.h>
 #include <PNGdec.h>
 #include <string.h>
+#include <esp_heap_caps.h>
 #include "storage.h"
 #include "gallery.h"
 #include "image_draw.h"
@@ -839,34 +840,21 @@ bool drawImageFile(const char *path) {
   if (!path || !storageBegin()) {
     return false;
   }
-  File peek = imageFs().open(path, FILE_READ);
-  if (!peek || peek.size() < 4) {
-    if (peek) {
-      peek.close();
-    }
-    return false;
-  }
-  uint8_t magic[4] = {0};
-  peek.read(magic, 4);
-  peek.close();
-  bool isJpeg = magic[0] == 0xFF && magic[1] == 0xD8 && magic[2] == 0xFF;
-  bool isPng =
-      magic[0] == 0x89 && magic[1] == 'P' && magic[2] == 'N' && magic[3] == 'G';
-  if (isJpeg) {
-    return drawJpegFromFs(path);
-  }
-  if (isPng) {
-    return drawPngFromFs(path);
-  }
-  return false;
+  // Fit/cover into the full panel. Old power-of-2 1:1 blit left many
+  // 1K/square images tiny (e.g. 128×128) in the center.
+  reclaimDisplay();
+  tft.fillScreen(ILI9341_BLACK);
+  return drawImageInRect(path, 0, 0, (int16_t)tft.width(), (int16_t)tft.height(),
+                         true);
 }
 
-// --- Thumbnail render into a fixed RGB565 buffer, then blit to a screen rect ---
-// Sized for 2×2 gallery cells on 320×240 (~150×95).
-static const int kThumbMaxW = 160;
-static const int kThumbMaxH = 120;
-static uint16_t thumbBuf[kThumbMaxW * kThumbMaxH];
-static uint16_t *thumbOut = thumbBuf;
+// --- Scale image into RGB565 buffer (gallery thumbs + fullscreen viewer) ---
+// Cap at panel size so drawImageFile can cover the whole ILI9341.
+static const int kThumbMaxW = 320;
+static const int kThumbMaxH = 240;
+static uint16_t *thumbBuf = nullptr;
+static int thumbBufCap = 0; // pixels
+static uint16_t *thumbOut = nullptr;
 static int thumbDw = 0;
 static int thumbDh = 0;
 static int thumbSrcW = 0;
@@ -876,6 +864,32 @@ static int thumbSampleX0 = 0;
 static int thumbSampleY0 = 0;
 static int thumbSampleW = 0;
 static int thumbSampleH = 0;
+
+static bool ensureThumbBuf(int pixels) {
+  if (pixels < 1) {
+    return false;
+  }
+  if (thumbBuf && thumbBufCap >= pixels) {
+    return true;
+  }
+  if (thumbBuf) {
+    free(thumbBuf);
+    thumbBuf = nullptr;
+    thumbBufCap = 0;
+  }
+  size_t bytes = (size_t)pixels * sizeof(uint16_t);
+  thumbBuf = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM |
+                                                     MALLOC_CAP_8BIT);
+  if (!thumbBuf) {
+    thumbBuf = (uint16_t *)malloc(bytes);
+  }
+  if (!thumbBuf) {
+    Serial.printf("ERR thumb buf %u bytes\n", (unsigned)bytes);
+    return false;
+  }
+  thumbBufCap = pixels;
+  return true;
+}
 
 static bool thumbJpgOutput(int16_t x, int16_t y, uint16_t w, uint16_t h,
                            uint16_t *bitmap) {
@@ -1050,6 +1064,13 @@ static bool renderToThumb(const char *path, int maxW, int maxH, bool isJpeg,
   }
   if (maxW < 8 || maxH < 8) {
     return false;
+  }
+  if (!ensureThumbBuf(maxW * maxH)) {
+    return false;
+  }
+  // Prefer caller-supplied buffer (gallery RAM cache); else shared PSRAM buf.
+  if (!thumbOut || thumbOut == thumbBuf) {
+    thumbOut = thumbBuf;
   }
 
   if (isJpeg) {
@@ -1273,7 +1294,7 @@ bool drawImageInRect(const char *path, int16_t x, int16_t y, int16_t w,
     }
   }
 
-  thumbOut = thumbBuf;
+  thumbOut = nullptr; // renderToThumb uses shared buffer
   if (!renderToThumb(path, w, h, isJpeg, cover)) {
     return false;
   }

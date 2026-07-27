@@ -80,6 +80,8 @@ static JoyEvent pollHardwareJoystick() {
   static bool swLongSent = false;
   static bool swShotChord = false; // up+click → ignore Ok on release
   static uint32_t swDownMs = 0;
+  static JoyEvent dirHeld = JoyEvent::None;
+  static uint32_t dirNextMs = 0;
 
   int x = analogRead(JOY_VRX_PIN);
   int y = analogRead(JOY_VRY_PIN);
@@ -102,16 +104,31 @@ static JoyEvent pollHardwareJoystick() {
     return (dy > 0) ? JoyEvent::Down : JoyEvent::Up;
   };
 
-  // Stick directions — one event per deflection; must return to center.
+  // Stick directions — first edge, then auto-repeat while held.
   // Skip while SW held (chord handled below).
-  if (offCenter && !dirLatched && !swPressed) {
+  if (offCenter && !swPressed) {
     JoyEvent dir = dominantDir();
-    dirLatched = true;
-    inputLog("joy hw %s (x=%d y=%d)", joyEventName(dir), x, y);
-    return dir;
-  }
-  if (!offCenter) {
+    if (!dirLatched) {
+      dirLatched = true;
+      dirHeld = dir;
+      dirNextMs = now + JOY_REPEAT_DELAY_MS;
+      inputLog("joy hw %s (x=%d y=%d)", joyEventName(dir), x, y);
+      return dir;
+    }
+    if (dir != dirHeld) {
+      dirHeld = dir;
+      dirNextMs = now + JOY_REPEAT_DELAY_MS;
+      inputLog("joy hw %s (x=%d y=%d)", joyEventName(dir), x, y);
+      return dir;
+    }
+    if ((int32_t)(now - dirNextMs) >= 0) {
+      dirNextMs = now + JOY_REPEAT_MS;
+      inputLog("joy hw %s repeat", joyEventName(dir));
+      return dir;
+    }
+  } else if (!offCenter) {
     dirLatched = false;
+    dirHeld = JoyEvent::None;
   }
 
   // SW down while stick Up → Screenshot; hold → Back; short → Ok

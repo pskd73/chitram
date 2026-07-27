@@ -1,6 +1,7 @@
 #include "windows.h"
 #include "ask_window.h"
 #include "gallery_window.h"
+#include "menu_window.h"
 #include "settings_window.h"
 #include "web_window.h"
 
@@ -25,10 +26,10 @@ static void onHomeSelect(int index, const MenuItem &item) {
 }
 
 static MenuItem kHomeItems[] = {
-    {"Ask", 1, "chat", false},
-    {"Gallery", 2, "gallery", false},
-    {"Web", 3, "wifi", false},
-    {"Settings", 4, "gear", false},
+    {"Ask", 1, "chat", false, nullptr},
+    {"Gallery", 2, "gallery", false, nullptr},
+    {"Web", 3, "wifi", false, nullptr},
+    {"Settings", 4, "gear", false, nullptr},
 };
 
 static MenuWindow sHome("Home", kHomeItems, 4, onHomeSelect,

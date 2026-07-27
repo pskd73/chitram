@@ -5,6 +5,7 @@
 #include "gallery.h"
 #include "image_draw.h"
 #include "input.h"
+#include "menu_window.h"
 #include "settings.h"
 #include "ui_text.h"
 
@@ -139,8 +140,8 @@ static void onPhotoMenuSelect(int index, const MenuItem &item) {
 }
 
 static MenuItem sPhotoMenuItems[] = {
-    {"Edit", 1, "image", false},
-    {"Delete", 2, "bin", false},
+    {"Edit", 1, "image", false, nullptr},
+    {"Delete", 2, "bin", false, nullptr},
 };
 
 static MenuWindow sPhotoMenu("Photo", sPhotoMenuItems, 2, onPhotoMenuSelect,

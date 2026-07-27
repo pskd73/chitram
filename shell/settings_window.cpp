@@ -1,17 +1,11 @@
 #include "settings_window.h"
 
-#include "display.h"
 #include "gallery.h"
-#include "icon.h"
-#include "input.h"
+#include "menu_window.h"
 #include "settings.h"
-#include "ui_clip.h"
-#include "ui_text.h"
 
-#include <Adafruit_ILI9341.h>
 #include <stdio.h>
 #include <string.h>
-
 
 enum SettingsRow : int {
   kRowModel = 0,
@@ -32,6 +26,15 @@ static int sModelCount = 0;
 static int sAspectCount = 0;
 static int sResCount = 0;
 
+static char sModelSub[40];
+static char sAspectSub[24];
+static char sResSub[16];
+static char sShareSub[40];
+static char sSaveAudioSub[8];
+
+static MenuItem sSettingsItems[kRowCount];
+static MenuWindow *sSettingsWindow = nullptr;
+
 static void syncModelItems() {
   sModelCount = settingsImageModelCount();
   if (sModelCount > kModelCap) {
@@ -44,6 +47,7 @@ static void syncModelItems() {
     sModelItems[i].id = i;
     sModelItems[i].icon = nullptr;
     sModelItems[i].selected = m && cur && strcmp(m->id, cur) == 0;
+    sModelItems[i].subtitle = nullptr;
   }
 }
 
@@ -59,6 +63,7 @@ static void syncAspectItems() {
     sAspectItems[i].id = i;
     sAspectItems[i].icon = nullptr;
     sAspectItems[i].selected = o && cur && strcmp(o->id, cur) == 0;
+    sAspectItems[i].subtitle = nullptr;
   }
 }
 
@@ -74,7 +79,57 @@ static void syncResItems() {
     sResItems[i].id = i;
     sResItems[i].icon = nullptr;
     sResItems[i].selected = o && cur && strcmp(o->id, cur) == 0;
+    sResItems[i].subtitle = nullptr;
   }
+}
+
+static void syncSettingsItems() {
+  const char *model = settingsImageModelLabel(settingsImageModel());
+  const char *aspect = settingsAspectRatioLabel(settingsAspectRatio());
+  const char *res = settingsResolutionLabel(settingsResolution());
+  snprintf(sModelSub, sizeof(sModelSub), "%s", model ? model : "");
+  snprintf(sAspectSub, sizeof(sAspectSub), "%s", aspect ? aspect : "");
+  snprintf(sResSub, sizeof(sResSub), "%s", res ? res : "");
+  snprintf(sShareSub, sizeof(sShareSub), "%s / %s", settingsShareApSsid(),
+           settingsShareApPassword());
+  snprintf(sSaveAudioSub, sizeof(sSaveAudioSub), "%s",
+           settingsSaveAudio() ? "On" : "Off");
+
+  sSettingsItems[kRowModel].label = "Image AI Model";
+  sSettingsItems[kRowModel].id = kRowModel;
+  sSettingsItems[kRowModel].icon = "image";
+  sSettingsItems[kRowModel].selected = false;
+  sSettingsItems[kRowModel].subtitle = sModelSub;
+
+  sSettingsItems[kRowAspect].label = "Aspect Ratio";
+  sSettingsItems[kRowAspect].id = kRowAspect;
+  sSettingsItems[kRowAspect].icon = "image";
+  sSettingsItems[kRowAspect].selected = false;
+  sSettingsItems[kRowAspect].subtitle = sAspectSub;
+
+  sSettingsItems[kRowResolution].label = "Resolution";
+  sSettingsItems[kRowResolution].id = kRowResolution;
+  sSettingsItems[kRowResolution].icon = "image";
+  sSettingsItems[kRowResolution].selected = false;
+  sSettingsItems[kRowResolution].subtitle = sResSub;
+
+  sSettingsItems[kRowShare].label = "Web Wi-Fi";
+  sSettingsItems[kRowShare].id = kRowShare;
+  sSettingsItems[kRowShare].icon = "wifi";
+  sSettingsItems[kRowShare].selected = false;
+  sSettingsItems[kRowShare].subtitle = sShareSub;
+
+  sSettingsItems[kRowSaveAudio].label = "Save audio to SD";
+  sSettingsItems[kRowSaveAudio].id = kRowSaveAudio;
+  sSettingsItems[kRowSaveAudio].icon = "storage";
+  sSettingsItems[kRowSaveAudio].selected = false;
+  sSettingsItems[kRowSaveAudio].subtitle = sSaveAudioSub;
+
+  sSettingsItems[kRowClearGallery].label = "Clear Gallery";
+  sSettingsItems[kRowClearGallery].id = kRowClearGallery;
+  sSettingsItems[kRowClearGallery].icon = "bin";
+  sSettingsItems[kRowClearGallery].selected = false;
+  sSettingsItems[kRowClearGallery].subtitle = "Delete all photos";
 }
 
 static void onModelSelect(int index, const MenuItem &item) {
@@ -119,6 +174,7 @@ public:
   void onEnter() override {
     Window::onEnter();
     syncModelItems();
+    menu().setItems(sModelItems, sModelCount);
     int idx = settingsImageModelIndex(settingsImageModel());
     setFocusedIndex(idx >= 0 ? idx : 0);
   }
@@ -133,6 +189,7 @@ public:
   void onEnter() override {
     Window::onEnter();
     syncAspectItems();
+    menu().setItems(sAspectItems, sAspectCount);
     int idx = settingsAspectRatioIndex(settingsAspectRatio());
     setFocusedIndex(idx >= 0 ? idx : 0);
   }
@@ -147,6 +204,7 @@ public:
   void onEnter() override {
     Window::onEnter();
     syncResItems();
+    menu().setItems(sResItems, sResCount);
     int idx = settingsResolutionIndex(settingsResolution());
     setFocusedIndex(idx >= 0 ? idx : 0);
   }
@@ -166,152 +224,15 @@ static void onClearGallerySelect(int index, const MenuItem &item) {
 }
 
 static MenuItem sClearGalleryItems[] = {
-    {"Confirm clear", 1, "bin", false},
-    {"Cancel", 2, "back", false},
+    {"Confirm clear", 1, "bin", false, nullptr},
+    {"Cancel", 2, "back", false, nullptr},
 };
 
 static MenuWindow sClearGallery("Clear Gallery", sClearGalleryItems, 2,
                                 onClearGallerySelect, nullptr, "gallery");
 
-// ---- Settings root ----
-
-class SettingsWindow : public Window {
-public:
-  const char *title() const override { return "Settings"; }
-  const char *icon() const override { return "gear"; }
-  void onEnter() override;
-  bool onEvent(JoyEvent e) override;
-  int scrollContentHeight() const override;
-  void drawContent(int originX, int originY) override;
-
-private:
-  int focus_ = 0;
-
-  int rowHeight() const { return 8 * kUiMenuSize + 10 + 12; }
-  int rowTop(int index) const { return 8 + index * rowHeight(); }
-  void paintRow(int index, bool focused);
-  void openRow(int index);
-};
-
-static SettingsWindow sSettings;
-
-void SettingsWindow::onEnter() {
-  Window::onEnter();
-  focus_ = 0;
-}
-
-int SettingsWindow::scrollContentHeight() const {
-  return 8 + kRowCount * rowHeight() + 8;
-}
-
-void SettingsWindow::paintRow(int index, bool focused) {
-  reclaimDisplay();
-  const int cy = rowTop(index);
-  const int rh = rowHeight();
-  const int y = toScreenY(cy);
-  const int rowW = tft.width() - 2 * kUiPadX;
-  uint16_t bg = focused ? 0x3A2A : 0x18C3;
-  uint16_t fg = focused ? ILI9341_YELLOW : ILI9341_WHITE;
-  uint16_t sub = focused ? 0xC618 : 0x8410;
-
-  int drawY = y;
-  int drawH = rh - 2;
-  if (drawY < kWinTitleH) {
-    drawH -= (kWinTitleH - drawY);
-    drawY = kWinTitleH;
-  }
-  if (drawY + drawH > tft.height()) {
-    drawH = tft.height() - drawY;
-  }
-  if (drawH <= 0) {
-    return;
-  }
-
-  if (y >= kWinTitleH && y + rh - 2 <= tft.height()) {
-    tft.fillRoundRect(kUiPadX, y, rowW, rh - 2, 4, bg);
-    if (focused) {
-      tft.drawRoundRect(kUiPadX, y, rowW, rh - 2, 4, ILI9341_CYAN);
-    }
-  } else {
-    tft.fillRect(kUiPadX, drawY, rowW, drawH, bg);
-  }
-
-  const char *title = "";
-  const char *value = "";
-  const char *iconId = "image";
-  static char shareSub[40];
-  switch (index) {
-  case kRowModel:
-    title = "Image AI Model";
-    value = settingsImageModelLabel(settingsImageModel());
-    iconId = "image";
-    break;
-  case kRowAspect:
-    title = "Aspect Ratio";
-    value = settingsAspectRatioLabel(settingsAspectRatio());
-    iconId = "image";
-    break;
-  case kRowResolution:
-    title = "Resolution";
-    value = settingsResolutionLabel(settingsResolution());
-    iconId = "image";
-    break;
-  case kRowShare:
-    title = "Web Wi-Fi";
-    snprintf(shareSub, sizeof(shareSub), "%s / %s", settingsShareApSsid(),
-             settingsShareApPassword());
-    value = shareSub;
-    iconId = "wifi";
-    break;
-  case kRowSaveAudio:
-    title = "Save audio to SD";
-    value = settingsSaveAudio() ? "On" : "Off";
-    iconId = "storage";
-    break;
-  case kRowClearGallery:
-    title = "Clear Gallery";
-    value = "Delete all photos";
-    iconId = "bin";
-    break;
-  default:
-    break;
-  }
-
-  const int iconPad = Icon::kSize + 8;
-  const int textX = kUiPadX + kUiMenuItemPadX + iconPad;
-  const int textMaxW = rowW - 2 * kUiMenuItemPadX - iconPad;
-  const int iconY = y + 8;
-  if (iconY + Icon::kSize > kWinTitleH && iconY < tft.height()) {
-    Icon(iconId).draw((int16_t)(kUiPadX + kUiMenuItemPadX), (int16_t)iconY, fg,
-                      bg);
-  }
-
-  TextStyle st;
-  st.size = kUiMenuSize;
-  st.color = fg;
-  st.flags = TextFlagNoWrap | TextFlagTruncate;
-  st.maxLines = 1;
-  st.clipTop = kWinTitleH;
-  st.clipBottom = tft.height();
-  Text::draw(title, (int16_t)textX, (int16_t)(y + 4), (int16_t)textMaxW, st);
-
-  st.size = 1;
-  st.color = sub;
-  Text::draw(value ? value : "", (int16_t)textX,
-             (int16_t)(y + 4 + 8 * kUiMenuSize + 2), (int16_t)textMaxW, st);
-}
-
-void SettingsWindow::drawContent(int ox, int oy) {
-  (void)ox;
-  (void)oy;
-  uiClipSet(kWinTitleH, (int16_t)tft.height());
-  for (int i = 0; i < kRowCount; ++i) {
-    paintRow(i, i == focus_);
-  }
-  uiClipClear();
-}
-
-void SettingsWindow::openRow(int index) {
+static void onSettingsSelect(int index, const MenuItem &item) {
+  (void)item;
   switch (index) {
   case kRowModel:
     syncModelItems();
@@ -326,11 +247,13 @@ void SettingsWindow::openRow(int index) {
     gWindows.push(&sResPicker);
     break;
   case kRowShare:
-    // SoftAP credentials — informational (edit via Web settings)
     break;
   case kRowSaveAudio:
     settingsSetSaveAudio(!settingsSaveAudio());
-    paintRow(kRowSaveAudio, true);
+    syncSettingsItems();
+    if (sSettingsWindow) {
+      sSettingsWindow->drawContentArea();
+    }
     break;
   case kRowClearGallery:
     gWindows.push(&sClearGallery);
@@ -340,32 +263,25 @@ void SettingsWindow::openRow(int index) {
   }
 }
 
-bool SettingsWindow::onEvent(JoyEvent e) {
-  if (e == JoyEvent::Up) {
-    if (focus_ > 0) {
-      int prev = focus_;
-      --focus_;
-      ensureVisible(rowTop(focus_), rowHeight());
-      paintRow(prev, false);
-      paintRow(focus_, true);
-    }
-    return true;
+class SettingsWindow : public MenuWindow {
+public:
+  SettingsWindow()
+      : MenuWindow("Settings", sSettingsItems, kRowCount, onSettingsSelect,
+                   nullptr, "gear") {
+    menu().setWrapNavigation(false);
+    sSettingsWindow = this;
   }
-  if (e == JoyEvent::Down) {
-    if (focus_ < kRowCount - 1) {
-      int prev = focus_;
-      ++focus_;
-      ensureVisible(rowTop(focus_), rowHeight());
-      paintRow(prev, false);
-      paintRow(focus_, true);
-    }
-    return true;
+
+  void onEnter() override {
+    Window::onEnter();
+    syncSettingsItems();
+    menu().setItems(sSettingsItems, kRowCount);
+    menu().resetFocus();
   }
-  if (e == JoyEvent::Ok) {
-    openRow(focus_);
-    return true;
-  }
-  return false;
-}
+
+  void onFocus() override { syncSettingsItems(); }
+};
+
+static SettingsWindow sSettings;
 
 Window *windowSettings() { return &sSettings; }

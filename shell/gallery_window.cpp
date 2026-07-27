@@ -267,13 +267,8 @@ void GalleryWindow::onEnter() {
   Window::onEnter();
   storageBegin();
   galleryEnsureDir();
-  // One-shot per boot: rewrite thumbs that may have black-grid artifacts
-  // from an older upscale/scale bug.
-  static bool sThumbsRebuilt = false;
-  if (!sThumbsRebuilt) {
-    sThumbsRebuilt = true;
-    galleryRebuildThumbs();
-  }
+  // Thumbs live on SD (/gallery/thumbnails/) and are created at save time.
+  // Do not rebuild here — decoding every full image blocks first open.
   count_ = galleryCount();
   focus_ = 0;
   thumbCacheInvalidate();
@@ -371,6 +366,7 @@ void GalleryWindow::focusChanged(int prev) {
     drawContentArea();
     return;
   }
+  // No scroll: only borders change (cells stay put).
   uiClipSet((int16_t)contentTop(), (int16_t)tft.height());
   paintBorder(prev, false);
   paintBorder(focus_, true);

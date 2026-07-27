@@ -5,9 +5,7 @@
 
 static const int kWinTitleH = 32;
 static const int kWinStackMax = 8;
-static const int kMenuMaxItems = 16;
 static const int kUiPadX = 10;
-static const int kUiMenuItemPadX = 10;
 
 static const int kUiTitleSize = 2;
 static const int kUiBodySize = 2;
@@ -80,47 +78,6 @@ private:
   const char *title_;
   const char *body_;
   const char *icon_;
-};
-
-struct MenuItem {
-  const char *label;
-  int id;
-  const char *icon; // optional left Icon id (nullable)
-  bool selected;    // when true, draw check on the right
-};
-
-using MenuSelectFn = void (*)(int index, const MenuItem &item);
-
-class MenuWindow : public Window {
-public:
-  MenuWindow(const char *title, MenuItem *items, int count,
-             MenuSelectFn onSelect, const char *hint = nullptr,
-             const char *icon = nullptr);
-
-  const char *title() const override { return title_; }
-  const char *icon() const override { return icon_; }
-  void onEnter() override;
-  bool onEvent(JoyEvent e) override;
-  int scrollContentHeight() const override;
-  void drawContent(int originX, int originY) override;
-
-  int focusedIndex() const { return focus_; }
-  void setFocusedIndex(int i);
-
-private:
-  int hintBlockHeight() const;
-  int rowContentTop(int index) const; // content-local
-  int rowHeight() const { return 8 * kUiMenuSize + 10; }
-  void paintRow(int index, bool focused); // screen-space, clipped
-  void focusChanged(int prev);
-
-  const char *title_;
-  MenuItem *items_;
-  int count_;
-  MenuSelectFn onSelect_;
-  const char *hint_;
-  const char *icon_;
-  int focus_ = 0;
 };
 
 class WindowStack {

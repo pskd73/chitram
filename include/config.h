@@ -32,6 +32,8 @@
 #define JOY_SW_PIN BTN_PIN
 #define JOY_DEADZONE 500 // from measured center ~1955/1880
 #define JOY_LONG_MS BTN_LONG_MS // hold SW → Back
+#define JOY_REPEAT_DELAY_MS 350 // hold before auto-repeat starts
+#define JOY_REPEAT_MS 110       // auto-repeat interval while held
 
 // Onboard SD_MMC (do not rewire)
 #define SD_MMC_CLK 39
