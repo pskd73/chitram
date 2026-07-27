@@ -52,6 +52,7 @@ static char sWifiSsid[SETTINGS_NAME_MAX] = WIFI_SSID;
 static char sWifiPassword[SETTINGS_WIFI_PASS_MAX] = WIFI_PASSWORD;
 static char sApPassword[SETTINGS_AP_PASS_MAX] = "chitram12";
 static bool sSaveAudio = false;
+static char sAiPrompt[SETTINGS_PROMPT_MAX] = {};
 static bool sReady = false;
 
 static int optionIndex(const SettingsOption *opts, int count, const char *id) {
@@ -124,6 +125,7 @@ static void useDefaults() {
   copyBounded(sWifiPassword, sizeof(sWifiPassword), WIFI_PASSWORD);
   copyBounded(sApPassword, sizeof(sApPassword), kDefaultApPassword);
   sSaveAudio = false;
+  sAiPrompt[0] = '\0';
 }
 
 static bool extractJsonString(const String &raw, const char *key, String &out) {
@@ -230,7 +232,9 @@ static bool saveToFs() {
   appendJsonString(f, sApPassword);
   f.print("\",\"save_audio\":");
   f.print(sSaveAudio ? "true" : "false");
-  f.print("}\n");
+  f.print(",\"ai_prompt\":\"");
+  appendJsonString(f, sAiPrompt);
+  f.print("\"}\n");
   f.close();
   return true;
 }
@@ -314,6 +318,13 @@ static bool loadFromFs() {
   if (extractJsonBool(raw, "save_audio", saveAudio)) {
     sSaveAudio = saveAudio;
     any = true;
+  }
+
+  if (extractJsonString(raw, "ai_prompt", val)) {
+    if (val.length() < SETTINGS_PROMPT_MAX) {
+      copyBounded(sAiPrompt, sizeof(sAiPrompt), val.c_str());
+      any = true;
+    }
   }
 
   return any;
@@ -565,6 +576,28 @@ bool settingsSetSaveAudio(bool on) {
     return false;
   }
   Serial.printf("settings: save_audio=%d\n", (int)sSaveAudio);
+  return true;
+}
+
+const char *settingsAiPrompt() {
+  ensureReady();
+  return sAiPrompt;
+}
+
+bool settingsSetAiPrompt(const char *text) {
+  ensureReady();
+  if (!text) text = "";
+  if (strlen(text) >= SETTINGS_PROMPT_MAX) {
+    return false;
+  }
+  if (strcmp(sAiPrompt, text) == 0) {
+    return true;
+  }
+  copyBounded(sAiPrompt, sizeof(sAiPrompt), text);
+  if (!saveToFs()) {
+    return false;
+  }
+  Serial.printf("settings: ai_prompt=\"%s\"\n", sAiPrompt);
   return true;
 }
 

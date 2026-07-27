@@ -551,6 +551,10 @@ bool generateAndShowImage(const String &promptIn, char *outPath, size_t outLen,
   {
     String tmp = promptIn;
     tmp.trim();
+    const char *aiPrefix = settingsAiPrompt();
+    if (aiPrefix && aiPrefix[0]) {
+      tmp = String(aiPrefix) + ", " + tmp;
+    }
     if (tmp.length() > 220) {
       tmp = tmp.substring(0, 220);
     }

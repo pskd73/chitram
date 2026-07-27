@@ -59,6 +59,11 @@ bool settingsSetApPassword(const char *password);
 bool settingsSaveAudio();
 bool settingsSetSaveAudio(bool on);
 
+// AI prompt prefix prepended to every image generation request.
+#define SETTINGS_PROMPT_MAX 128
+const char *settingsAiPrompt();
+bool settingsSetAiPrompt(const char *text);
+
 // SoftAP credentials derived from device name + AP password
 const char *settingsShareApSsid();
 const char *settingsShareApPassword();

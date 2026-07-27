@@ -3,6 +3,7 @@
 #include "gallery.h"
 #include "menu_window.h"
 #include "settings.h"
+#include "stt_input_window.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -13,8 +14,9 @@ enum SettingsRow : int {
   kRowResolution = 2,
   kRowShare = 3,
   kRowSaveAudio = 4,
-  kRowClearGallery = 5,
-  kRowCount = 6,
+  kRowPrompt = 5,
+  kRowClearGallery = 6,
+  kRowCount = 7,
 };
 
 static const int kModelCap = 8;
@@ -31,6 +33,7 @@ static char sAspectSub[24];
 static char sResSub[16];
 static char sShareSub[40];
 static char sSaveAudioSub[8];
+static char sPromptSub[SETTINGS_PROMPT_MAX + 4];
 
 static MenuItem sSettingsItems[kRowCount];
 static MenuWindow *sSettingsWindow = nullptr;
@@ -124,6 +127,19 @@ static void syncSettingsItems() {
   sSettingsItems[kRowSaveAudio].icon = "storage";
   sSettingsItems[kRowSaveAudio].selected = false;
   sSettingsItems[kRowSaveAudio].subtitle = sSaveAudioSub;
+
+  const char *prompt = settingsAiPrompt();
+  if (prompt && prompt[0]) {
+    snprintf(sPromptSub, sizeof(sPromptSub), "%s", prompt);
+  } else {
+    snprintf(sPromptSub, sizeof(sPromptSub), "None");
+  }
+
+  sSettingsItems[kRowPrompt].label = "AI Prompt";
+  sSettingsItems[kRowPrompt].id = kRowPrompt;
+  sSettingsItems[kRowPrompt].icon = "chat";
+  sSettingsItems[kRowPrompt].selected = false;
+  sSettingsItems[kRowPrompt].subtitle = sPromptSub;
 
   sSettingsItems[kRowClearGallery].label = "Clear Gallery";
   sSettingsItems[kRowClearGallery].id = kRowClearGallery;
@@ -254,6 +270,18 @@ static void onSettingsSelect(int index, const MenuItem &item) {
     if (sSettingsWindow) {
       sSettingsWindow->drawContentArea();
     }
+    break;
+  case kRowPrompt:
+    gWindows.push(windowSttInput(
+        "AI Prompt", "chat",
+        [](void * /*ctx*/, const char *text) {
+          settingsSetAiPrompt(text);
+          syncSettingsItems();
+          if (sSettingsWindow) {
+            sSettingsWindow->drawContentArea();
+          }
+        },
+        nullptr, nullptr));
     break;
   case kRowClearGallery:
     gWindows.push(&sClearGallery);
