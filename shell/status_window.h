@@ -21,6 +21,3 @@ private:
 
 Window *windowWifiConnecting();
 Window *windowGenerating();
-Window *windowImagePreview(const char *path);
-// Menu over a photo: Edit / Delete.
-Window *windowPhotoMenu(const char *imagePath);

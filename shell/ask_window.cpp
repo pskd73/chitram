@@ -6,6 +6,7 @@
 #include "input.h"
 #include "menu.h"
 #include "net_services.h"
+#include "photo_window.h"
 #include "settings.h"
 #include "stt_session.h"
 #include "status_window.h"

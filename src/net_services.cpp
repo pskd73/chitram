@@ -840,22 +840,13 @@ bool generateAndShowImage(const String &promptIn, char *outPath, size_t outLen,
   return drawImageFile(saved);
 }
 
-bool drawImageFile(const char *path) {
-  if (!path || !storageBegin()) {
-    return false;
-  }
-  // Fit/cover into the full panel. Old power-of-2 1:1 blit left many
-  // 1K/square images tiny (e.g. 128×128) in the center.
-  reclaimDisplay();
-  tft.fillScreen(ILI9341_BLACK);
-  return drawImageInRect(path, 0, 0, (int16_t)tft.width(), (int16_t)tft.height(),
-                         true);
-}
-
 // --- Scale image into RGB565 buffer (gallery thumbs + fullscreen viewer) ---
-// Cap at panel size so drawImageFile can cover the whole ILI9341.
+// Panel-sized shared buffer for 1× / thumbs.
 static const int kThumbMaxW = 320;
 static const int kThumbMaxH = 240;
+// Zoom canvas may be up to 4× panel (still far smaller than a 1K/2K frame).
+static const int kRenderMaxW = 320 * 4;
+static const int kRenderMaxH = 240 * 4;
 static uint16_t *thumbBuf = nullptr;
 static int thumbBufCap = 0; // pixels
 static uint16_t *thumbOut = nullptr;
@@ -868,6 +859,18 @@ static int thumbSampleX0 = 0;
 static int thumbSampleY0 = 0;
 static int thumbSampleW = 0;
 static int thumbSampleH = 0;
+// Zoom/pan for legacy crop-during-decode fallback.
+static int thumbZoom = 1;
+static float thumbPanX = 0.5f;
+static float thumbPanY = 0.5f;
+
+// PSRAM cover canvas for zoom≥2 — decode once, pan by blit.
+static char sZoomPath[48] = {};
+static int sZoomLevel = 0;
+static uint16_t *sZoomPx = nullptr;
+static int sZoomW = 0;
+static int sZoomH = 0;
+static int sZoomCap = 0;
 
 static bool ensureThumbBuf(int pixels) {
   if (pixels < 1) {
@@ -1045,6 +1048,42 @@ static void thumbSetSampleWindow(int srcW, int srcH, int dstW, int dstH,
     }
     thumbSampleY0 = (srcH - thumbSampleH) / 2;
   }
+
+  // Zoom: shrink the cover window and offset by pan (still only fills dst buffer).
+  if (thumbZoom > 1) {
+    const int baseX = thumbSampleX0;
+    const int baseY = thumbSampleY0;
+    const int baseW = thumbSampleW;
+    const int baseH = thumbSampleH;
+    int sw = baseW / thumbZoom;
+    int sh = baseH / thumbZoom;
+    if (sw < 1) {
+      sw = 1;
+    }
+    if (sh < 1) {
+      sh = 1;
+    }
+    float px = thumbPanX;
+    float py = thumbPanY;
+    if (px < 0.f) {
+      px = 0.f;
+    }
+    if (px > 1.f) {
+      px = 1.f;
+    }
+    if (py < 0.f) {
+      py = 0.f;
+    }
+    if (py > 1.f) {
+      py = 1.f;
+    }
+    const int maxOX = baseW - sw;
+    const int maxOY = baseH - sh;
+    thumbSampleX0 = baseX + (int)(px * (float)maxOX + 0.5f);
+    thumbSampleY0 = baseY + (int)(py * (float)maxOY + 0.5f);
+    thumbSampleW = sw;
+    thumbSampleH = sh;
+  }
 }
 
 static void thumbClampScale(uint16_t srcW, uint16_t srcH, int maxW, int maxH,
@@ -1060,22 +1099,31 @@ static void thumbClampScale(uint16_t srcW, uint16_t srcH, int maxW, int maxH,
 
 static bool renderToThumb(const char *path, int maxW, int maxH, bool isJpeg,
                           bool cover) {
-  if (maxW > kThumbMaxW) {
-    maxW = kThumbMaxW;
+  if (maxW > kRenderMaxW) {
+    maxW = kRenderMaxW;
   }
-  if (maxH > kThumbMaxH) {
-    maxH = kThumbMaxH;
+  if (maxH > kRenderMaxH) {
+    maxH = kRenderMaxH;
   }
   if (maxW < 8 || maxH < 8) {
     return false;
   }
-  if (!ensureThumbBuf(maxW * maxH)) {
-    return false;
-  }
-  // Prefer caller-supplied buffer (gallery RAM cache); else shared PSRAM buf.
+  // Caller-supplied buffer (gallery thumbs / zoom canvas) skips shared alloc.
   if (!thumbOut || thumbOut == thumbBuf) {
+    if (!ensureThumbBuf(maxW * maxH)) {
+      return false;
+    }
     thumbOut = thumbBuf;
   }
+
+  // When zoomed, decode sharper source so the crop still fills the panel.
+  // Output buffer stays maxW×maxH — zoom never allocates a full-res frame.
+  const int z = (cover && thumbZoom > 1) ? thumbZoom : 1;
+  const int needW = maxW * z;
+  const int needH = maxH * z;
+  // Large canvases (zoom cache): stop near ~1× dest for speed.
+  // Panel-sized draws keep a sharper ~1.5–2× source.
+  const bool largeCanvas = (maxW * maxH) > (kThumbMaxW * kThumbMaxH);
 
   if (isJpeg) {
     TJpgDec.setSwapBytes(false);
@@ -1084,43 +1132,55 @@ static bool renderToThumb(const char *path, int maxW, int maxH, bool isJpeg,
       return false;
     }
     uint8_t scale = 1;
-    // Shrink decode until roughly 2× dest (speed), but keep >= dest.
     while (scale < 8) {
       uint8_t next = (uint8_t)(scale * 2);
-      if ((int)(jw / next) < maxW || (int)(jh / next) < maxH) {
+      if ((int)(jw / next) < needW || (int)(jh / next) < needH) {
         break;
       }
-      if (jw / scale <= (uint16_t)(maxW * 2) &&
-          jh / scale <= (uint16_t)(maxH * 2)) {
+      if (largeCanvas) {
+        if (jw / scale <= (uint16_t)needW && jh / scale <= (uint16_t)needH) {
+          break;
+        }
+      } else if (jw / scale <= (uint16_t)(needW * 2) &&
+                 jh / scale <= (uint16_t)(needH * 2)) {
         break;
       }
       scale = next;
     }
-    if (cover) {
+    if (cover && !largeCanvas) {
       while (scale < 8) {
         uint8_t next = (uint8_t)(scale * 2);
-        if ((int)(jw / next) < maxW || (int)(jh / next) < maxH) {
+        if ((int)(jw / next) < needW || (int)(jh / next) < needH) {
           break;
         }
-        if (jw / scale <= (uint16_t)(maxW * 3 / 2) ||
-            jh / scale <= (uint16_t)(maxH * 3 / 2)) {
+        if (jw / scale <= (uint16_t)(needW * 3 / 2) ||
+            jh / scale <= (uint16_t)(needH * 3 / 2)) {
           break;
         }
         scale = next;
       }
-    } else {
+    } else if (!cover) {
       while (scale < 8) {
         uint8_t next = (uint8_t)(scale * 2);
-        if ((int)(jw / next) < maxW || (int)(jh / next) < maxH) {
+        if ((int)(jw / next) < needW || (int)(jh / next) < needH) {
           break;
         }
-        if (jw / scale <= (uint16_t)maxW && jh / scale <= (uint16_t)maxH) {
+        if (jw / scale <= (uint16_t)needW && jh / scale <= (uint16_t)needH) {
           break;
         }
         scale = next;
       }
     }
-    thumbClampScale(jw, jh, maxW, maxH, &scale);
+    // Large canvas: allow mild upsample rather than forcing full-res decode.
+    if (largeCanvas) {
+      while (scale > 1 &&
+             ((int)(jw / scale) < needW * 3 / 4 ||
+              (int)(jh / scale) < needH * 3 / 4)) {
+        scale = (uint8_t)(scale / 2);
+      }
+    } else {
+      thumbClampScale(jw, jh, needW, needH, &scale);
+    }
     TJpgDec.setJpgScale(scale);
     thumbSrcW = (int)(jw / scale);
     thumbSrcH = (int)(jh / scale);
@@ -1159,10 +1219,10 @@ static bool renderToThumb(const char *path, int maxW, int maxH, bool isJpeg,
   thumbPngScale = 1;
   while (thumbPngScale < 8) {
     int next = thumbPngScale * 2;
-    if (pw / next < maxW || ph / next < maxH) {
+    if (pw / next < needW || ph / next < needH) {
       break;
     }
-    if (pw / thumbPngScale <= maxW * 2 && ph / thumbPngScale <= maxH * 2) {
+    if (pw / thumbPngScale <= needW * 2 && ph / thumbPngScale <= needH * 2) {
       break;
     }
     thumbPngScale = next;
@@ -1170,11 +1230,11 @@ static bool renderToThumb(const char *path, int maxW, int maxH, bool isJpeg,
   if (cover) {
     while (thumbPngScale < 8) {
       int next = thumbPngScale * 2;
-      if (pw / next < maxW || ph / next < maxH) {
+      if (pw / next < needW || ph / next < needH) {
         break;
       }
-      if (pw / thumbPngScale <= maxW * 3 / 2 ||
-          ph / thumbPngScale <= maxH * 3 / 2) {
+      if (pw / thumbPngScale <= needW * 3 / 2 ||
+          ph / thumbPngScale <= needH * 3 / 2) {
         break;
       }
       thumbPngScale = next;
@@ -1182,17 +1242,17 @@ static bool renderToThumb(const char *path, int maxW, int maxH, bool isJpeg,
   } else {
     while (thumbPngScale < 8) {
       int next = thumbPngScale * 2;
-      if (pw / next < maxW || ph / next < maxH) {
+      if (pw / next < needW || ph / next < needH) {
         break;
       }
-      if (pw / thumbPngScale <= maxW && ph / thumbPngScale <= maxH) {
+      if (pw / thumbPngScale <= needW && ph / thumbPngScale <= needH) {
         break;
       }
       thumbPngScale = next;
     }
   }
   while (thumbPngScale > 1 &&
-         (pw / thumbPngScale < maxW || ph / thumbPngScale < maxH)) {
+         (pw / thumbPngScale < needW || ph / thumbPngScale < needH)) {
     thumbPngScale /= 2;
   }
   thumbSrcW = pw / thumbPngScale;
@@ -1265,6 +1325,125 @@ void blitRgb565(int16_t x, int16_t y, int16_t w, int16_t h,
   tft.endWrite();
 }
 
+// Blit a w×h window from a larger RGB565 bitmap (srcStride pixels/row).
+static void blitRgb565Region(int16_t dx, int16_t dy, int16_t w, int16_t h,
+                             const uint16_t *src, int srcStride, int sx,
+                             int sy) {
+  if (!src || w < 1 || h < 1 || srcStride < w) {
+    return;
+  }
+  reclaimDisplay();
+  tft.startWrite();
+  tft.setAddrWindow(dx, dy, (uint16_t)w, (uint16_t)h);
+  for (int row = 0; row < h; ++row) {
+    const uint16_t *line =
+        src + (size_t)(sy + row) * (size_t)srcStride + (size_t)sx;
+    tft.writePixels(const_cast<uint16_t *>(line), (uint32_t)w);
+  }
+  tft.endWrite();
+}
+
+void imageZoomCacheClear() {
+  if (sZoomPx) {
+    free(sZoomPx);
+    sZoomPx = nullptr;
+  }
+  sZoomCap = 0;
+  sZoomW = 0;
+  sZoomH = 0;
+  sZoomLevel = 0;
+  sZoomPath[0] = '\0';
+}
+
+// Build a 2× cover canvas once per image. 2× pans blit from it; 4× pans
+// nearest-neighbor upscale a half-size window (no second SD decode).
+static bool ensureZoomCanvas(const char *path, int sw, int sh) {
+  const int cw = sw * 2;
+  const int ch = sh * 2;
+  if (sZoomPx && sZoomLevel == 2 && sZoomW == cw && sZoomH == ch &&
+      sZoomPath[0] && strcmp(sZoomPath, path) == 0) {
+    return true;
+  }
+
+  const int need = cw * ch;
+  if (!sZoomPx || sZoomCap < need) {
+    if (sZoomPx) {
+      free(sZoomPx);
+      sZoomPx = nullptr;
+      sZoomCap = 0;
+    }
+    size_t bytes = (size_t)need * sizeof(uint16_t);
+    sZoomPx = (uint16_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM |
+                                                       MALLOC_CAP_8BIT);
+    if (!sZoomPx) {
+      sZoomPx = (uint16_t *)malloc(bytes);
+    }
+    if (!sZoomPx) {
+      Serial.printf("ERR zoom canvas %u bytes\n", (unsigned)bytes);
+      return false;
+    }
+    sZoomCap = need;
+  }
+
+  bool isJpeg = false, isPng = false;
+  if (!peekImageType(path, &isJpeg, &isPng)) {
+    return false;
+  }
+
+  const int savedZoom = thumbZoom;
+  thumbZoom = 1;
+  thumbOut = sZoomPx;
+  bool ok = renderToThumb(path, cw, ch, isJpeg, true);
+  thumbOut = thumbBuf;
+  thumbZoom = savedZoom;
+  if (!ok || thumbDw != cw || thumbDh != ch) {
+    Serial.printf("ERR zoom decode dw=%d dh=%d want %dx%d\n", thumbDw, thumbDh,
+                  cw, ch);
+    return false;
+  }
+
+  strncpy(sZoomPath, path, sizeof(sZoomPath) - 1);
+  sZoomPath[sizeof(sZoomPath) - 1] = '\0';
+  sZoomLevel = 2;
+  sZoomW = cw;
+  sZoomH = ch;
+  Serial.printf("zoom cache 2x %dx%d (%u KB)\n", cw, ch,
+                (unsigned)(need * sizeof(uint16_t) / 1024));
+  return true;
+}
+
+// Nearest-neighbor 2× upscale of a (w/2)×(h/2) window → w×h on screen.
+static void blitRgb565Region2x(int16_t dx, int16_t dy, int16_t w, int16_t h,
+                               const uint16_t *src, int srcStride, int sx,
+                               int sy) {
+  if (!src || w < 2 || h < 2) {
+    return;
+  }
+  const int srcW = w / 2;
+  const int srcH = h / 2;
+  // One scanline buffer in PSRAM/stack — 320 pixels fits on stack.
+  uint16_t line[320];
+  if (w > 320) {
+    return;
+  }
+  reclaimDisplay();
+  tft.startWrite();
+  tft.setAddrWindow(dx, dy, (uint16_t)w, (uint16_t)h);
+  for (int row = 0; row < srcH; ++row) {
+    const uint16_t *s =
+        src + (size_t)(sy + row) * (size_t)srcStride + (size_t)sx;
+    for (int col = 0; col < srcW; ++col) {
+      uint16_t px = s[col];
+      line[col * 2] = px;
+      line[col * 2 + 1] = px;
+    }
+    // Write each source row twice (2× vertical).
+    tft.writePixels(line, (uint32_t)w);
+    tft.writePixels(line, (uint32_t)w);
+  }
+  tft.endWrite();
+}
+
 bool loadImageCoverToBuffer(const char *path, uint16_t *dst, int w, int h) {
   if (!dst || w < 8 || h < 8 || w > kThumbMaxW || h > kThumbMaxH) {
     return false;
@@ -1307,6 +1486,95 @@ bool drawImageInRect(const char *path, int16_t x, int16_t y, int16_t w,
   int16_t by = cover ? y : (int16_t)(y + (h - thumbDh) / 2);
   blitRgb565(bx, by, (int16_t)thumbDw, (int16_t)thumbDh, thumbOut);
   return true;
+}
+
+bool drawImageFile(const char *path) {
+  return drawImageZoomed(path, 1, 0.5f, 0.5f);
+}
+
+bool drawImageZoomed(const char *path, int zoom, float panX, float panY) {
+  if (!path || !storageBegin()) {
+    return false;
+  }
+  if (zoom < 1) {
+    zoom = 1;
+  }
+  if (zoom > 4) {
+    zoom = 4;
+  }
+  if (zoom == 3) {
+    zoom = 4;
+  }
+  if (panX < 0.f) {
+    panX = 0.f;
+  }
+  if (panX > 1.f) {
+    panX = 1.f;
+  }
+  if (panY < 0.f) {
+    panY = 0.f;
+  }
+  if (panY > 1.f) {
+    panY = 1.f;
+  }
+
+  const int sw = tft.width();
+  const int sh = tft.height();
+
+  // 1×: decode straight to panel (no zoom canvas).
+  if (zoom <= 1) {
+    thumbZoom = 1;
+    thumbPanX = 0.5f;
+    thumbPanY = 0.5f;
+    reclaimDisplay();
+    tft.fillScreen(ILI9341_BLACK);
+    return drawImageInRect(path, 0, 0, (int16_t)sw, (int16_t)sh, true);
+  }
+
+  // Zoom≥2: one 2× PSRAM canvas; pan is a blit (4× = 2× digital from canvas).
+  if (ensureZoomCanvas(path, sw, sh)) {
+    if (zoom <= 2) {
+      int maxOX = sZoomW - sw;
+      int maxOY = sZoomH - sh;
+      if (maxOX < 0) {
+        maxOX = 0;
+      }
+      if (maxOY < 0) {
+        maxOY = 0;
+      }
+      const int ox = (int)(panX * (float)maxOX + 0.5f);
+      const int oy = (int)(panY * (float)maxOY + 0.5f);
+      blitRgb565Region(0, 0, (int16_t)sw, (int16_t)sh, sZoomPx, sZoomW, ox, oy);
+      return true;
+    }
+    // 4×: half-size window from 2× canvas, nearest-neighbor ×2 to panel.
+    const int vw = sw / 2;
+    const int vh = sh / 2;
+    int maxOX = sZoomW - vw;
+    int maxOY = sZoomH - vh;
+    if (maxOX < 0) {
+      maxOX = 0;
+    }
+    if (maxOY < 0) {
+      maxOY = 0;
+    }
+    const int ox = (int)(panX * (float)maxOX + 0.5f);
+    const int oy = (int)(panY * (float)maxOY + 0.5f);
+    blitRgb565Region2x(0, 0, (int16_t)sw, (int16_t)sh, sZoomPx, sZoomW, ox, oy);
+    return true;
+  }
+
+  // Fallback: crop-during-decode (slower, but works if PSRAM is tight).
+  thumbZoom = zoom;
+  thumbPanX = panX;
+  thumbPanY = panY;
+  reclaimDisplay();
+  tft.fillScreen(ILI9341_BLACK);
+  bool ok = drawImageInRect(path, 0, 0, (int16_t)sw, (int16_t)sh, true);
+  thumbZoom = 1;
+  thumbPanX = 0.5f;
+  thumbPanY = 0.5f;
+  return ok;
 }
 
 bool littlefsBegin() { return storageBegin(); }

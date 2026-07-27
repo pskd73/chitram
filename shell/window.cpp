@@ -253,6 +253,10 @@ void WindowStack::dispatch(JoyEvent e) {
     return;
   }
   if (e == JoyEvent::Screenshot) {
+    // Let the top window claim it first (e.g. photo zoom).
+    if (w->onEvent(e)) {
+      return;
+    }
     char saved[48];
     bool ok = gallerySaveScreenshot(saved, sizeof(saved));
     inputLog(ok ? "screenshot ok %s" : "screenshot failed", ok ? saved : "");

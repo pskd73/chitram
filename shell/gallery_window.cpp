@@ -5,7 +5,7 @@
 #include "icon.h"
 #include "image_draw.h"
 #include "input.h"
-#include "status_window.h"
+#include "photo_window.h"
 #include "storage.h"
 #include "ui_clip.h"
 #include "ui_text.h"
@@ -127,20 +127,6 @@ static void drawClippedRect(int x, int y, int w, int h, uint16_t color) {
   }
 }
 
-class GalleryViewerWindow : public Window {
-public:
-  void setIndex(int index) { index_ = index; }
-  const char *title() const override { return ""; }
-  bool hasTitleBar() const override { return false; }
-  void onEnter() override { Window::onEnter(); }
-  bool onEvent(JoyEvent e) override;
-  void drawContent(int originX, int originY) override;
-
-private:
-  int index_ = 0;
-  void showAt(int index);
-};
-
 class GalleryWindow : public Window {
 public:
   const char *title() const override { return "Gallery"; }
@@ -167,56 +153,6 @@ private:
 };
 
 static GalleryWindow sGallery;
-static GalleryViewerWindow sViewer;
-
-void GalleryViewerWindow::showAt(int index) {
-  int n = galleryCount();
-  if (n <= 0) {
-    return;
-  }
-  while (index < 0) {
-    index += n;
-  }
-  index_ = index % n;
-  drawContentArea();
-}
-
-bool GalleryViewerWindow::onEvent(JoyEvent e) {
-  if (e == JoyEvent::Left || e == JoyEvent::Up) {
-    showAt(index_ - 1);
-    return true;
-  }
-  if (e == JoyEvent::Right || e == JoyEvent::Down) {
-    showAt(index_ + 1);
-    return true;
-  }
-  if (e == JoyEvent::Ok) {
-    char path[40];
-    if (galleryPathAt(index_, path, sizeof(path))) {
-      inputLog("photo: menu %s", path);
-      // Replace viewer with menu — Back returns to Gallery (minimal stack)
-      gWindows.replaceTop(windowPhotoMenu(path));
-      return true;
-    }
-    inputLog("photo: ok but no path idx=%d", index_);
-    return true;
-  }
-  return false;
-}
-
-void GalleryViewerWindow::drawContent(int ox, int oy) {
-  (void)ox;
-  (void)oy;
-  char path[40];
-  if (!galleryPathAt(index_, path, sizeof(path)) || !drawImageFile(path)) {
-    TextStyle st;
-    st.size = kUiBodySize;
-    st.color = ILI9341_WHITE;
-    st.flags = TextFlagWrap;
-    Text::draw("Can't load image", (int16_t)kUiPadX, (int16_t)40,
-               (int16_t)(tft.width() - 2 * kUiPadX), st);
-  }
-}
 
 int GalleryWindow::absIndex(int displayI) const {
   return count_ - 1 - displayI;
@@ -378,8 +314,7 @@ bool GalleryWindow::onEvent(JoyEvent e) {
     return false;
   }
   if (e == JoyEvent::Ok) {
-    sViewer.setIndex(absIndex(focus_));
-    gWindows.push(&sViewer);
+    gWindows.push(windowPhotoGallery(absIndex(focus_)));
     return true;
   }
   if (e != JoyEvent::Up && e != JoyEvent::Down && e != JoyEvent::Left &&
