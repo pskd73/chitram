@@ -27,6 +27,7 @@ public:
   void onEnter() override;
   void onExit() override;
   void onFocus() override;
+  void onTick() override;
   bool onEvent(JoyEvent e) override;
   void drawContent(int originX, int originY) override;
 
@@ -36,16 +37,21 @@ private:
   int zoomStep_ = 0;      // index into kZoomSteps
   float panX_ = 0.5f;
   float panY_ = 0.5f;
+  bool imageReady_ = false;
+  bool loadFailed_ = false;
+  bool loadPending_ = false;
 
   bool isGallery() const { return galleryIndex_ >= 0; }
   int zoom() const { return kZoomSteps[zoomStep_]; }
   bool isZoomed() const { return zoomStep_ > 0; }
 
   void resetView();
+  void beginLoad();
   void panBy(float dx, float dy);
   void showGalleryAt(int index);
   void openMenu();
   bool resolvePath();
+  void paintStatus(const char *msg);
 };
 
 static PhotoWindow sPhoto;
@@ -56,9 +62,34 @@ void PhotoWindow::resetView() {
   panY_ = 0.5f;
 }
 
+void PhotoWindow::beginLoad() {
+  imageReady_ = false;
+  loadFailed_ = false;
+  loadPending_ = true;
+}
+
+void PhotoWindow::paintStatus(const char *msg) {
+  TextStyle st;
+  st.size = kUiBodySize;
+  st.color = ILI9341_WHITE;
+  st.flags = TextFlagNoWrap;
+  const int16_t maxW = (int16_t)tft.width();
+  TextMetrics m = Text::measure(msg, 0, 0, maxW, st);
+  int16_t x = (int16_t)((tft.width() - m.width) / 2);
+  int16_t y = (int16_t)((tft.height() - m.height) / 2);
+  if (x < 0) {
+    x = 0;
+  }
+  if (y < 0) {
+    y = 0;
+  }
+  Text::draw(msg, x, y, maxW, st);
+}
+
 void PhotoWindow::setPath(const char *path) {
   galleryIndex_ = -1;
   resetView();
+  beginLoad();
   if (!path) {
     path_[0] = '\0';
     return;
@@ -70,6 +101,7 @@ void PhotoWindow::setPath(const char *path) {
 void PhotoWindow::setGalleryIndex(int index) {
   galleryIndex_ = index;
   resetView();
+  beginLoad();
   resolvePath();
 }
 
@@ -81,23 +113,50 @@ bool PhotoWindow::resolvePath() {
 }
 
 void PhotoWindow::onEnter() {
-  Window::onEnter();
   resetView();
   if (isGallery()) {
     resolvePath();
   }
+  beginLoad();
+  Window::onEnter(); // paints Loading… before decode
 }
 
 void PhotoWindow::onExit() {
   imageZoomCacheClear();
+  imageReady_ = false;
+  loadPending_ = false;
 }
 
 void PhotoWindow::onFocus() {
-  // Returning from photo menu — keep zoom/pan, just refresh.
+  // Returning from photo menu — keep zoom/pan; image already on screen.
+}
+
+void PhotoWindow::onTick() {
+  if (!loadPending_ || gWindows.top() != this) {
+    return;
+  }
+  loadPending_ = false;
+
+  if (!path_[0] && !resolvePath()) {
+    loadFailed_ = true;
+    drawContentArea();
+    return;
+  }
+
+  inputLog("photo: load %s", path_);
+  if (drawImageZoomed(path_, zoom(), panX_, panY_)) {
+    imageReady_ = true;
+    loadFailed_ = false;
+    // drawImageZoomed already painted the panel.
+  } else {
+    loadFailed_ = true;
+    imageReady_ = false;
+    drawContentArea();
+  }
 }
 
 void PhotoWindow::zoomIn() {
-  if (zoomStep_ >= kZoomStepN - 1) {
+  if (!imageReady_ || zoomStep_ >= kZoomStepN - 1) {
     return;
   }
   ++zoomStep_;
@@ -108,7 +167,7 @@ void PhotoWindow::zoomIn() {
 }
 
 bool PhotoWindow::zoomOutOne() {
-  if (zoomStep_ <= 0) {
+  if (!imageReady_ || zoomStep_ <= 0) {
     return false;
   }
   --zoomStep_;
@@ -124,7 +183,7 @@ bool PhotoWindow::zoomOutOne() {
 }
 
 void PhotoWindow::panBy(float dx, float dy) {
-  if (!isZoomed()) {
+  if (!imageReady_ || !isZoomed()) {
     return;
   }
   panX_ += dx;
@@ -156,19 +215,30 @@ void PhotoWindow::showGalleryAt(int index) {
   resetView();
   imageZoomCacheClear();
   resolvePath();
-  drawContentArea();
+  beginLoad();
+  drawContentArea(); // shows Loading… immediately
 }
 
 void PhotoWindow::openMenu() {
+  if (!imageReady_) {
+    return;
+  }
   if (!path_[0] && !resolvePath()) {
     return;
   }
   inputLog("photo: menu %s", path_);
-  // Push (don't replace) so zoom/pan state survives under the menu.
   gWindows.push(windowPhotoMenu(path_));
 }
 
 bool PhotoWindow::onEvent(JoyEvent e) {
+  if (loadPending_ || !imageReady_) {
+    if (e == JoyEvent::Back) {
+      loadPending_ = false;
+      return false; // allow cancel while loading
+    }
+    return true; // swallow other input until loaded
+  }
+
   if (e == JoyEvent::Back) {
     if (zoomOutOne()) {
       return true;
@@ -182,7 +252,6 @@ bool PhotoWindow::onEvent(JoyEvent e) {
   }
 
   if (isZoomed()) {
-    // All directions pan — zoom is via the menu.
     if (e == JoyEvent::Left) {
       panBy(-kPanStep, 0.f);
       return true;
@@ -202,7 +271,6 @@ bool PhotoWindow::onEvent(JoyEvent e) {
     return true;
   }
 
-  // 1× gallery: Left/Right browse photos.
   if (isGallery()) {
     if (e == JoyEvent::Left) {
       showGalleryAt(galleryIndex_ - 1);
@@ -220,21 +288,19 @@ void PhotoWindow::drawContent(int ox, int oy) {
   (void)ox;
   (void)oy;
   if (!path_[0] && !resolvePath()) {
-    TextStyle st;
-    st.size = kUiBodySize;
-    st.color = ILI9341_WHITE;
-    st.flags = TextFlagWrap;
-    Text::draw("Can't load image", (int16_t)kUiPadX, 40,
-               (int16_t)(tft.width() - 2 * kUiPadX), st);
+    paintStatus("Can't load image");
+    return;
+  }
+  if (loadFailed_) {
+    paintStatus("Can't load image\n\nok = menu");
+    return;
+  }
+  if (!imageReady_) {
+    paintStatus("Loading");
     return;
   }
   if (!drawImageZoomed(path_, zoom(), panX_, panY_)) {
-    TextStyle st;
-    st.size = kUiBodySize;
-    st.color = ILI9341_WHITE;
-    st.flags = TextFlagWrap;
-    Text::draw("Can't load image\n\nok = menu", (int16_t)kUiPadX, 40,
-               (int16_t)(tft.width() - 2 * kUiPadX), st);
+    paintStatus("Can't load image\n\nok = menu");
   }
 }
 
@@ -258,12 +324,11 @@ static void onPhotoMenuSelect(int index, const MenuItem &item) {
       gWindows.replaceTop(windowAskModify(sPhotoMenuPath), 2);
     }
     break;
-  case 4: // Delete — drop menu + photo
+  case 4: // Delete — drop menu + photo in one pop (no deleted-file flash)
     if (sPhotoMenuPath[0] && galleryDelete(sPhotoMenuPath)) {
       sPhotoMenuPath[0] = '\0';
     }
-    gWindows.pop(); // menu
-    gWindows.pop(); // photo
+    gWindows.popN(2);
     break;
   default:
     break;

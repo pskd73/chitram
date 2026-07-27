@@ -1468,6 +1468,12 @@ bool drawImageInRect(const char *path, int16_t x, int16_t y, int16_t w,
     return false;
   }
 
+  // Decode into RAM first so the screen (e.g. "Loading…") stays visible.
+  thumbOut = nullptr; // renderToThumb uses shared buffer
+  if (!renderToThumb(path, w, h, isJpeg, cover)) {
+    return false;
+  }
+
   reclaimDisplay();
   if (!cover) {
     // letterbox bg — clip fill
@@ -1475,11 +1481,6 @@ bool drawImageInRect(const char *path, int16_t x, int16_t y, int16_t w,
     if (uiClipSpan(y, h, &y0, &y1)) {
       tft.fillRect(x, y0, w, y1 - y0, 0x2104);
     }
-  }
-
-  thumbOut = nullptr; // renderToThumb uses shared buffer
-  if (!renderToThumb(path, w, h, isJpeg, cover)) {
-    return false;
   }
 
   int16_t bx = cover ? x : (int16_t)(x + (w - thumbDw) / 2);
@@ -1521,13 +1522,12 @@ bool drawImageZoomed(const char *path, int zoom, float panX, float panY) {
   const int sw = tft.width();
   const int sh = tft.height();
 
-  // 1×: decode straight to panel (no zoom canvas).
+  // 1×: decode into buffer first so any on-screen "Loading…" stays visible,
+  // then blit once (cover fills the panel).
   if (zoom <= 1) {
     thumbZoom = 1;
     thumbPanX = 0.5f;
     thumbPanY = 0.5f;
-    reclaimDisplay();
-    tft.fillScreen(ILI9341_BLACK);
     return drawImageInRect(path, 0, 0, (int16_t)sw, (int16_t)sh, true);
   }
 
@@ -1568,8 +1568,6 @@ bool drawImageZoomed(const char *path, int zoom, float panX, float panY) {
   thumbZoom = zoom;
   thumbPanX = panX;
   thumbPanY = panY;
-  reclaimDisplay();
-  tft.fillScreen(ILI9341_BLACK);
   bool ok = drawImageInRect(path, 0, 0, (int16_t)sw, (int16_t)sh, true);
   thumbZoom = 1;
   thumbPanX = 0.5f;

@@ -85,6 +85,8 @@ public:
   void clear();
   void push(Window *w);
   bool pop();
+  // Pop n windows and redraw only the final top (avoids flashing intermediates).
+  bool popN(int n);
   // Replace the top window(s) with w. n=1 swaps the top; n=2 drops top+under, etc.
   // Depth becomes (oldDepth - n + 1). Root is never removed (n clamped).
   void replaceTop(Window *w, int n = 1);

@@ -193,13 +193,20 @@ void WindowStack::push(Window *w) {
   w->draw();
 }
 
-bool WindowStack::pop() {
-  if (depth_ <= 1) {
+bool WindowStack::pop() { return popN(1); }
+
+bool WindowStack::popN(int n) {
+  if (n < 1 || depth_ <= 1) {
     return false;
   }
-  Window *leaving = stack_[--depth_];
-  stack_[depth_] = nullptr;
-  leaving->onExit();
+  if (n >= depth_) {
+    n = depth_ - 1; // never remove root
+  }
+  for (int i = 0; i < n; ++i) {
+    Window *leaving = stack_[--depth_];
+    stack_[depth_] = nullptr;
+    leaving->onExit();
+  }
   Window *now = stack_[depth_ - 1];
   now->onFocus();
   now->draw();
