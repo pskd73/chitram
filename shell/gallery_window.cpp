@@ -29,12 +29,17 @@ static uint8_t sThumbAge[kThumbCacheN];
 static int sThumbW = 0;
 static int sThumbH = 0;
 static uint8_t sThumbClock = 0;
+// Abs indices that failed to decode — don't retry every tick.
+static const int kThumbFailCap = 24;
+static int sThumbFailAbs[kThumbFailCap];
+static int sThumbFailN = 0;
 
 static void thumbCacheInvalidate() {
   for (int i = 0; i < kThumbCacheN; ++i) {
     sThumbAbs[i] = -1;
     sThumbAge[i] = 0;
   }
+  sThumbFailN = 0;
 }
 
 static void thumbCacheFree() {
@@ -134,6 +139,7 @@ public:
   void onEnter() override;
   void onFocus() override;
   void onExit() override;
+  void onTick() override;
   bool onEvent(JoyEvent e) override;
   int scrollContentHeight() const override;
   void drawContent(int originX, int originY) override;
@@ -141,6 +147,11 @@ public:
 private:
   int count_ = 0;
   int focus_ = 0;
+  // Defer paint/decode out of onEvent so joystick stays responsive.
+  bool needsPaint_ = false;
+  bool fullPaint_ = false;
+  int paintPrevFocus_ = 0;
+  uint32_t lastNavMs_ = 0;
 
   int absIndex(int displayI) const;
   int rowCount() const;
@@ -149,7 +160,13 @@ private:
   void paintBorder(int displayI, bool focused);
   void paintCell(int displayI, bool focused);
   void focusChanged(int prev);
-  const uint16_t *thumbFor(int absIdx, int cw, int ch);
+  void schedulePaint(int prevFocus, bool scrolled);
+  // Cache lookup only — never decodes (keeps draw/input responsive).
+  const uint16_t *thumbCached(int absIdx, int cw, int ch);
+  // Decode one missing thumb into the cache. Returns true if loaded.
+  bool thumbLoad(int absIdx, int cw, int ch);
+  bool thumbFailed(int absIdx) const;
+  void thumbMarkFailed(int absIdx);
 };
 
 static GalleryWindow sGallery;
@@ -204,20 +221,26 @@ void GalleryWindow::onEnter() {
   storageBegin();
   galleryEnsureDir();
   // Thumbs live on SD (/gallery/thumbnails/) and are created at save time.
-  // Do not rebuild here — decoding every full image blocks first open.
-  count_ = galleryCount();
+  int n = galleryCount();
+  if (n != count_) {
+    thumbCacheInvalidate();
+  }
+  count_ = n;
   focus_ = 0;
-  thumbCacheInvalidate();
 }
 
 void GalleryWindow::onFocus() {
-  count_ = galleryCount();
+  int n = galleryCount();
+  if (n != count_) {
+    thumbCacheInvalidate();
+    count_ = n;
+  }
   if (count_ <= 0) {
     focus_ = 0;
   } else if (focus_ >= count_) {
     focus_ = count_ - 1;
   }
-  thumbCacheInvalidate();
+  // Keep RAM thumb cache warm when returning from the photo viewer.
 }
 
 void GalleryWindow::onExit() {
@@ -225,13 +248,36 @@ void GalleryWindow::onExit() {
   // entirely — viewer is pushed on top, so don't free here.
 }
 
-const uint16_t *GalleryWindow::thumbFor(int absIdx, int cw, int ch) {
+bool GalleryWindow::thumbFailed(int absIdx) const {
+  for (int i = 0; i < sThumbFailN; ++i) {
+    if (sThumbFailAbs[i] == absIdx) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void GalleryWindow::thumbMarkFailed(int absIdx) {
+  if (thumbFailed(absIdx) || sThumbFailN >= kThumbFailCap) {
+    return;
+  }
+  sThumbFailAbs[sThumbFailN++] = absIdx;
+}
+
+const uint16_t *GalleryWindow::thumbCached(int absIdx, int cw, int ch) {
   if (!thumbCacheEnsure(cw, ch)) {
     return nullptr;
   }
   int slot = thumbCacheFind(absIdx);
-  if (slot >= 0) {
-    return sThumbPx[slot];
+  return slot >= 0 ? sThumbPx[slot] : nullptr;
+}
+
+bool GalleryWindow::thumbLoad(int absIdx, int cw, int ch) {
+  if (!thumbCacheEnsure(cw, ch)) {
+    return false;
+  }
+  if (thumbCacheFind(absIdx) >= 0 || thumbFailed(absIdx)) {
+    return false;
   }
   char path[40];
   char thumb[48];
@@ -241,14 +287,87 @@ const uint16_t *GalleryWindow::thumbFor(int absIdx, int cw, int ch) {
   } else if (galleryPathAt(absIdx, path, sizeof(path))) {
     src = path;
   } else {
-    return nullptr;
+    thumbMarkFailed(absIdx);
+    return false;
   }
-  slot = thumbCacheSlot(absIdx);
+  int slot = thumbCacheSlot(absIdx);
   if (!loadImageCoverToBuffer(src, sThumbPx[slot], cw, ch)) {
     sThumbAbs[slot] = -1;
-    return nullptr;
+    thumbMarkFailed(absIdx);
+    return false;
   }
-  return sThumbPx[slot];
+  return true;
+}
+
+void GalleryWindow::schedulePaint(int prevFocus, bool scrolled) {
+  lastNavMs_ = millis();
+  needsPaint_ = true;
+  if (scrolled) {
+    fullPaint_ = true;
+  } else if (!fullPaint_) {
+    paintPrevFocus_ = prevFocus;
+  }
+}
+
+void GalleryWindow::onTick() {
+  if (count_ <= 0 || gWindows.top() != this) {
+    return;
+  }
+
+  // Paint first (never decode in the same turn as a nav paint).
+  if (needsPaint_) {
+    needsPaint_ = false;
+    const bool full = fullPaint_;
+    fullPaint_ = false;
+    if (full) {
+      drawContentArea();
+    } else {
+      uiClipSet((int16_t)contentTop(), (int16_t)tft.height());
+      paintBorder(paintPrevFocus_, false);
+      paintBorder(focus_, true);
+      uiClipClear();
+    }
+    return;
+  }
+
+  // Decode only after the stick has been idle — keeps scroll smooth.
+  if ((millis() - lastNavMs_) < 160) {
+    return;
+  }
+
+  int cw, ch;
+  cellSize(&cw, &ch);
+  if (!thumbCacheEnsure(cw, ch)) {
+    return;
+  }
+
+  auto tryLoad = [&](int displayI) -> bool {
+    int cx, cy, cellW, cellH;
+    cellContentRect(displayI, &cx, &cy, &cellW, &cellH);
+    if (!intersectsViewport(cy, cellH)) {
+      return false;
+    }
+    const int abs = absIndex(displayI);
+    if (thumbCacheFind(abs) >= 0 || thumbFailed(abs)) {
+      return false;
+    }
+    if (!thumbLoad(abs, cw, ch)) {
+      return false;
+    }
+    uiClipSet((int16_t)contentTop(), (int16_t)tft.height());
+    paintCell(displayI, displayI == focus_);
+    uiClipClear();
+    return true;
+  };
+
+  if (tryLoad(focus_)) {
+    return;
+  }
+  for (int i = 0; i < count_; ++i) {
+    if (i != focus_ && tryLoad(i)) {
+      return;
+    }
+  }
 }
 
 void GalleryWindow::paintBorder(int displayI, bool focused) {
@@ -280,7 +399,7 @@ void GalleryWindow::paintCell(int displayI, bool focused) {
   int x = cx;
   int y = toScreenY(cy);
   const int abs = absIndex(displayI);
-  const uint16_t *px = thumbFor(abs, cw, ch);
+  const uint16_t *px = thumbCached(abs, cw, ch);
   if (px) {
     blitRgb565((int16_t)x, (int16_t)y, (int16_t)cw, (int16_t)ch, px);
   } else {
@@ -298,15 +417,7 @@ void GalleryWindow::focusChanged(int prev) {
   cellContentRect(focus_, &cx, &cy, &cw, &ch);
   const int before = scrollY();
   ensureVisible(cy, ch);
-  if (scrollY() != before) {
-    drawContentArea();
-    return;
-  }
-  // No scroll: only borders change (cells stay put).
-  uiClipSet((int16_t)contentTop(), (int16_t)tft.height());
-  paintBorder(prev, false);
-  paintBorder(focus_, true);
-  uiClipClear();
+  schedulePaint(prev, scrollY() != before);
 }
 
 bool GalleryWindow::onEvent(JoyEvent e) {
@@ -323,7 +434,6 @@ bool GalleryWindow::onEvent(JoyEvent e) {
   }
 
   int prev = focus_;
-  int col = focus_ % kGalCols;
   int row = focus_ / kGalCols;
 
   if (e == JoyEvent::Left) {
@@ -353,9 +463,11 @@ bool GalleryWindow::onEvent(JoyEvent e) {
   if (focus_ >= count_) {
     focus_ = count_ - 1;
   }
-  (void)col;
   if (prev != focus_) {
+    // Update scroll + schedule paint — never decode/draw here.
     focusChanged(prev);
+  } else {
+    lastNavMs_ = millis(); // still idle-suppress decode while stick held
   }
   return true;
 }

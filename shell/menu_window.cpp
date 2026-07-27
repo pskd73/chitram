@@ -48,7 +48,15 @@ bool MenuWindow::onEvent(JoyEvent e) {
   }
   if (moved) {
     const int fi = menu_.focusedIndex();
-    ensureVisible(menuContentTop() + menu_.rowTop(fi), menu_.rowHeight(fi));
+    const int rowY = menuContentTop() + menu_.rowTop(fi);
+    const int rowH = menu_.rowHeight(fi);
+    // Include the leading top pad when bringing the first row into view;
+    // otherwise ensureVisible(rowY=8) leaves scrollY=8 and eats the padding.
+    if (fi == 0) {
+      ensureVisible(0, rowY + rowH);
+    } else {
+      ensureVisible(rowY, rowH);
+    }
     drawContentArea();
   }
   return true;
