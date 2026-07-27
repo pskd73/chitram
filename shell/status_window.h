@@ -21,3 +21,5 @@ private:
 
 Window *windowWifiConnecting();
 Window *windowGenerating();
+// Fullscreen boot splash: device name, then advances to Home after 5s.
+Window *windowBootSplash();

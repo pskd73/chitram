@@ -406,9 +406,10 @@ void appLoop() {
 #include "ask_window.h"
 #include "storage.h"
 #include "settings.h"
+#include "status_window.h"
 
 // -----------------------------------------------------------------------------
-// UI shell: Home → Ask / Gallery / Settings
+// UI shell: splash → Home → Ask / Gallery / Settings
 // -----------------------------------------------------------------------------
 
 void appSetup() {
@@ -423,8 +424,8 @@ void appSetup() {
   settingsBegin();
 
   gWindows.clear();
-  gWindows.push(windowHome());
-  inputLog("home — Ask / Gallery / Settings");
+  gWindows.push(windowBootSplash());
+  inputLog("boot splash — %s", settingsDeviceName());
 }
 
 void appLoop() {
