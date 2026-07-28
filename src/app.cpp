@@ -405,10 +405,11 @@ void appLoop() {
 #include "gallery_window.h"
 #include "storage.h"
 #include "settings.h"
+#include "profiles.h"
 #include "status_window.h"
 
 // -----------------------------------------------------------------------------
-// UI shell: splash → Home → Make Photo / Ask / Gallery / Settings
+// UI shell: splash → Home → Make Photo / Ask / Profiles / …
 // -----------------------------------------------------------------------------
 
 void appSetup() {
@@ -416,11 +417,12 @@ void appSetup() {
   delay(800);
   inputBegin();
 
-  inputLog("chitram ui — Make Photo + Ask + Gallery + Settings");
+  inputLog("chitram ui — Make Photo + Ask + Profiles + Gallery + Settings");
   displayBegin();
   reclaimDisplay();
   storageBegin();
   settingsBegin();
+  profilesBegin();
 
   gWindows.clear();
   gWindows.push(windowBootSplash());

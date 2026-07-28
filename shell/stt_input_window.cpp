@@ -48,7 +48,8 @@ private:
   String lastBubbleText_;
   int16_t bubbleY_ = 0;
   int16_t bubbleH_ = 0;
-  int16_t menuY_   = 0;
+  int16_t menuY_ = 0;
+  int contentH_ = 0;
   uint32_t lastUiMs_ = 0;
   MenuItem confirmItems_[3] = {};
   Menu confirmMenu_;
@@ -62,7 +63,8 @@ private:
   void doCancel();
 
   int16_t measureBubbleH(const char *text, int16_t innerW) const;
-  void drawBubble(int16_t x, int16_t y, int16_t w, int16_t h, const char *text);
+  void drawBubble(int16_t x, int16_t y, int16_t w, int16_t h, const char *text,
+                  int16_t textClipBottom);
   void updateBubbleIfNeeded();
   void setupMenu();
   void paintMenu();
@@ -70,8 +72,11 @@ private:
   void paintConnecting(int ox, int oy);
   void paintListening(int ox, int oy);
   void paintError(int ox, int oy);
+  int menuBlockHeight() const;
 
   String currentText() const;
+
+  int scrollContentHeight() const override { return contentH_; }
 };
 
 static SttInputWindow sSttInput;
@@ -82,6 +87,7 @@ void SttInputWindow::onSttDone(void *ctx, const String &text) {
   SttInputWindow *w = static_cast<SttInputWindow *>(ctx);
   w->transcript_ = text;
   w->lastBubbleText_ = "";
+  w->setScrollY(0);
   if (w->autoConfirm_) {
     w->doConfirm();
     return;
@@ -142,6 +148,7 @@ void SttInputWindow::onEnter() {
   Window::onEnter();
   transcript_ = "";
   lastBubbleText_ = "";
+  contentH_ = viewportHeight();
   setupMenu();
   startListening();
 }
@@ -208,6 +215,19 @@ bool SttInputWindow::onEvent(JoyEvent e) {
   }
 
   if (st == SttState::Done) {
+    // Up/Down scroll long transcripts; Left/Right move confirm menu.
+    if (e == JoyEvent::Up || e == JoyEvent::Down) {
+      if (maxScroll() > 0) {
+        const int step = scrollStep();
+        if (e == JoyEvent::Up) {
+          scrollBy(-step);
+        } else {
+          scrollBy(step);
+        }
+        drawContentArea();
+        return true;
+      }
+    }
     if (e == JoyEvent::Ok) {
       int f = confirmMenu_.focusedIndex();
       if (f == 0) {
@@ -269,14 +289,20 @@ int16_t SttInputWindow::measureBubbleH(const char *text, int16_t innerW) const {
   return (int16_t)(h < 40 ? 40 : h);
 }
 
+int SttInputWindow::menuBlockHeight() const {
+  return confirmMenu_.contentHeight() + 8;
+}
+
 void SttInputWindow::drawBubble(int16_t x, int16_t y, int16_t w, int16_t h,
-                                const char *text) {
+                                const char *text, int16_t textClipBottom) {
   reclaimDisplay();
   int16_t y0, y1;
   if (!uiClipSpan(y, h, &y0, &y1)) {
     return;
   }
-  if (y >= contentTop() && y + h <= tft.height()) {
+  const int clipBot =
+      textClipBottom > 0 ? textClipBottom : (int)tft.height();
+  if (y >= contentTop() && y + h <= clipBot) {
     tft.fillRoundRect(x, y, w, h, kBubbleR, kBubbleBg);
   } else {
     tft.fillRect(x, y0, w, y1 - y0, kBubbleBg);
@@ -286,7 +312,7 @@ void SttInputWindow::drawBubble(int16_t x, int16_t y, int16_t w, int16_t h,
   st.color = kBubbleFg;
   st.flags = TextFlagWrap;
   st.clipTop = contentTop();
-  st.clipBottom = tft.height();
+  st.clipBottom = (int16_t)clipBot;
   Text::draw(text, (int16_t)(x + kBubblePad), (int16_t)(y + kBubblePad),
              (int16_t)(w - 2 * kBubblePad), st);
 }
@@ -298,17 +324,34 @@ void SttInputWindow::updateBubbleIfNeeded() {
   }
   const int16_t maxW = (int16_t)(tft.width() - 2 * kUiPadX);
   const int16_t innerW = (int16_t)(maxW - 2 * kBubblePad);
-  int16_t newH = measureBubbleH(text.c_str(), innerW);
+  int16_t neededH = measureBubbleH(text.c_str(), innerW);
   const int maxH = tft.height() - bubbleY_ - 8;
-  if (newH > maxH) newH = (int16_t)maxH;
+  int16_t drawH = neededH > maxH ? (int16_t)maxH : neededH;
 
   reclaimDisplay();
   uiClipSet((int16_t)contentTop(), (int16_t)tft.height());
-  int clearH = newH > bubbleH_ ? newH : bubbleH_;
-  if (bubbleY_ + clearH > tft.height()) clearH = tft.height() - bubbleY_;
-  if (clearH > 0) tft.fillRect(kUiPadX, bubbleY_, maxW, clearH, ILI9341_BLACK);
-  bubbleH_ = newH;
-  drawBubble(kUiPadX, bubbleY_, maxW, bubbleH_, text.c_str());
+  int clearH = drawH > bubbleH_ ? drawH : bubbleH_;
+  if (bubbleY_ + clearH > tft.height()) {
+    clearH = tft.height() - bubbleY_;
+  }
+  if (clearH > 0) {
+    tft.fillRect(kUiPadX, bubbleY_, maxW, clearH, ILI9341_BLACK);
+  }
+  bubbleH_ = drawH;
+  tft.fillRoundRect(kUiPadX, bubbleY_, maxW, bubbleH_, kBubbleR, kBubbleBg);
+  int textY = bubbleY_ + kBubblePad;
+  if (neededH > drawH) {
+    // Prefer showing the newest lines while listening.
+    textY = bubbleY_ + drawH - (neededH - kBubblePad);
+  }
+  TextStyle st;
+  st.size = kUiBodySize;
+  st.color = kBubbleFg;
+  st.flags = TextFlagWrap;
+  st.clipTop = bubbleY_;
+  st.clipBottom = (int16_t)(bubbleY_ + bubbleH_);
+  Text::draw(text.c_str(), (int16_t)(kUiPadX + kBubblePad), (int16_t)textY,
+             innerW, st);
   lastBubbleText_ = text;
   uiClipClear();
 }
@@ -319,29 +362,31 @@ void SttInputWindow::paintMenu() {
 }
 
 void SttInputWindow::paintBubbleAndMenu(int ox, int oy) {
-  const int16_t maxW  = (int16_t)(tft.width() - 2 * kUiPadX);
-  const int16_t bubX  = (int16_t)(ox + kUiPadX);
+  const int16_t maxW = (int16_t)(tft.width() - 2 * kUiPadX);
+  const int16_t bubX = (int16_t)(ox + kUiPadX);
   bubbleY_ = (int16_t)(oy + 12);
 
   String text = currentText();
   const int16_t innerW = (int16_t)(maxW - 2 * kBubblePad);
+  // Never clamp — long transcripts scroll (Up/Down).
   bubbleH_ = measureBubbleH(text.c_str(), innerW);
 
-  const int menuBlock = confirmMenu_.contentHeight() + 8;
-  const int maxBubble = tft.height() - bubbleY_ - menuBlock;
-  if (bubbleH_ > maxBubble && maxBubble > 40) {
-    bubbleH_ = (int16_t)maxBubble;
-  }
-  drawBubble(bubX, bubbleY_, maxW, bubbleH_, text.c_str());
-  lastBubbleText_ = text;
-
   menuY_ = (int16_t)(bubbleY_ + bubbleH_ + 12);
+  contentH_ = (menuY_ - oy) + menuBlockHeight();
+  if (contentH_ < viewportHeight()) {
+    contentH_ = viewportHeight();
+  }
+
+  drawBubble(bubX, bubbleY_, maxW, bubbleH_, text.c_str(),
+             (int16_t)tft.height());
+  lastBubbleText_ = text;
   paintMenu();
 }
 
 void SttInputWindow::paintConnecting(int ox, int oy) {
+  contentH_ = viewportHeight();
   TextStyle st;
-  st.size  = kUiBodySize;
+  st.size = kUiBodySize;
   st.color = ILI9341_YELLOW;
   st.flags = TextFlagWrap;
   Text::draw("Connecting...", (int16_t)(ox + kUiPadX), (int16_t)(oy + 12),
@@ -351,7 +396,7 @@ void SttInputWindow::paintConnecting(int ox, int oy) {
 void SttInputWindow::paintListening(int ox, int oy) {
   const int16_t maxW = (int16_t)(tft.width() - 2 * kUiPadX);
   TextStyle st;
-  st.size  = kUiBodySize;
+  st.size = kUiBodySize;
   st.color = ILI9341_CYAN;
   st.flags = TextFlagNoWrap | TextFlagTruncate;
   st.maxLines = 1;
@@ -360,10 +405,25 @@ void SttInputWindow::paintListening(int ox, int oy) {
   bubbleY_ = (int16_t)(m.nextY + 10);
   const int16_t innerW = (int16_t)(maxW - 2 * kBubblePad);
   String text = currentText();
-  bubbleH_ = measureBubbleH(text.c_str(), innerW);
+  const int neededH = measureBubbleH(text.c_str(), innerW);
   const int maxH = tft.height() - bubbleY_ - 8;
-  if (bubbleH_ > maxH) bubbleH_ = (int16_t)maxH;
-  drawBubble((int16_t)(ox + kUiPadX), bubbleY_, maxW, bubbleH_, text.c_str());
+  bubbleH_ = neededH > maxH ? (int16_t)maxH : (int16_t)neededH;
+  contentH_ = viewportHeight();
+
+  tft.fillRoundRect((int16_t)(ox + kUiPadX), bubbleY_, maxW, bubbleH_, kBubbleR,
+                    kBubbleBg);
+  int textY = bubbleY_ + kBubblePad;
+  if (neededH > bubbleH_) {
+    textY = bubbleY_ + bubbleH_ - (neededH - kBubblePad);
+  }
+  TextStyle body;
+  body.size = kUiBodySize;
+  body.color = kBubbleFg;
+  body.flags = TextFlagWrap;
+  body.clipTop = bubbleY_;
+  body.clipBottom = (int16_t)(bubbleY_ + bubbleH_);
+  Text::draw(text.c_str(), (int16_t)(ox + kUiPadX + kBubblePad), (int16_t)textY,
+             innerW, body);
   lastBubbleText_ = text;
 }
 

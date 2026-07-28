@@ -6,6 +6,7 @@
 #include "menu.h"
 #include "net_services.h"
 #include "photo_window.h"
+#include "profiles.h"
 #include "stt_input_window.h"
 #include "status_window.h"
 #include "ui_clip.h"
@@ -34,7 +35,11 @@ enum class MakePhase : uint8_t {
 class MakePhotoWindow : public Window {
 public:
   const char *title() const override {
-    return sourcePath_[0] ? "Edit" : "Make Photo";
+    if (sourcePath_[0]) {
+      return "Edit";
+    }
+    const Profile *p = profilesActive();
+    return (p && p->name[0]) ? p->name : "Make Photo";
   }
   const char *icon() const override { return "image"; }
   void setSourcePath(const char *path);

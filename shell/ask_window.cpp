@@ -4,6 +4,7 @@
 #include "display.h"
 #include "input.h"
 #include "net_services.h"
+#include "profiles.h"
 #include "stt_input_window.h"
 #include "ui_clip.h"
 #include "ui_text.h"
@@ -43,7 +44,10 @@ struct AskMsg {
 
 class AskWindow : public Window {
 public:
-  const char *title() const override { return "Ask"; }
+  const char *title() const override {
+    const Profile *p = profilesActive();
+    return (p && p->name[0]) ? p->name : "Ask";
+  }
   const char *icon() const override { return "chat"; }
   const char *statusIcon() const override;
   uint16_t statusIconColor() const override;
@@ -293,8 +297,29 @@ void AskWindow::doReply() {
   streamLen_ = 0;
   char *reply = nullptr;
   size_t replyLen = 0;
-  bool ok = openRouterChat(kAskSystem, rolePtrs, textPtrs, msgCount_, &reply,
-                           &replyLen, onChatChunk, this);
+  const Profile *prof = profilesActive();
+  const char *sys = kAskSystem;
+  const char *model = CHAT_MODEL;
+  if (prof && prof->type == ProfileType::Text) {
+    if (prof->prompt[0]) {
+      sys = prof->prompt;
+    }
+    if (prof->model[0]) {
+      model = prof->model;
+    }
+  } else {
+    const Profile *fb = profilesAtType(ProfileType::Text, 0);
+    if (fb) {
+      if (fb->prompt[0]) {
+        sys = fb->prompt;
+      }
+      if (fb->model[0]) {
+        model = fb->model;
+      }
+    }
+  }
+  bool ok = openRouterChat(sys, rolePtrs, textPtrs, msgCount_, &reply,
+                           &replyLen, onChatChunk, this, model);
   streamText_ = nullptr;
   streamLen_ = 0;
   if (!ok || !reply || !replyLen) {

@@ -49,7 +49,7 @@ static const char kSettingsHtml[] = R"HTML(
     <dl class="settings-list">
       <div>
         <dt>Image model</dt>
-        <dd>{{model}}</dd>
+        <dd>Per profile (device Profiles menu)</dd>
       </div>
       <div>
         <dt>Aspect ratio</dt>

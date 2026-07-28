@@ -15,5 +15,5 @@ using ChatChunkCb = void (*)(void *ctx, const char *textSoFar, size_t len);
 bool openRouterChat(const char *systemPrompt, const char *const *roles,
                     const char *const *contents, int count, char **outOwned,
                     size_t *outLen, ChatChunkCb onChunk = nullptr,
-                    void *chunkCtx = nullptr);
+                    void *chunkCtx = nullptr, const char *model = nullptr);
 bool littlefsBegin();

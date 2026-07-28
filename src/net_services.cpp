@@ -2,6 +2,7 @@
 #include "config.h"
 #include "display.h"
 #include "deepgram.h"
+#include "profiles.h"
 #include "secrets.h"
 #include "settings.h"
 
@@ -560,12 +561,17 @@ bool generateAndShowImage(const String &promptIn, char *outPath, size_t outLen,
     return false;
   }
 
+  const Profile *prof = profilesActive();
+  if (!prof || prof->type != ProfileType::Image) {
+    prof = profilesAtType(ProfileType::Image, 0);
+  }
+  const char *aiPrefix =
+      (prof && prof->prompt[0]) ? prof->prompt : nullptr;
   char prompt[224];
   {
     String tmp = promptIn;
     tmp.trim();
-    const char *aiPrefix = settingsAiPrompt();
-    if (aiPrefix && aiPrefix[0]) {
+    if (aiPrefix) {
       tmp = String(aiPrefix) + ", " + tmp;
     }
     if (tmp.length() > 220) {
@@ -586,10 +592,8 @@ bool generateAndShowImage(const String &promptIn, char *outPath, size_t outLen,
   deepgramClearText();
   displayResetTranscriptCache();
 
-  const char *model = settingsImageModel();
-  if (!model || !model[0]) {
-    model = IMAGE_MODEL;
-  }
+  const char *model =
+      (prof && prof->model[0]) ? prof->model : IMAGE_MODEL;
 
   const bool editing = referencePath && referencePath[0];
   File refFile;
@@ -1795,7 +1799,8 @@ static bool extractAssistantContent(const char *json, size_t jsonLen,
 
 bool openRouterChat(const char *systemPrompt, const char *const *roles,
                     const char *const *contents, int count, char **outOwned,
-                    size_t *outLen, ChatChunkCb onChunk, void *chunkCtx) {
+                    size_t *outLen, ChatChunkCb onChunk, void *chunkCtx,
+                    const char *model) {
   if (outOwned) {
     *outOwned = nullptr;
   }
@@ -1825,7 +1830,7 @@ bool openRouterChat(const char *systemPrompt, const char *const *roles,
   String body;
   body.reserve(1024 + (size_t)count * 256);
   body += "{\"model\":\"";
-  body += CHAT_MODEL;
+  body += (model && model[0]) ? model : CHAT_MODEL;
   body += "\",\"stream\":true,\"temperature\":0.7,\"max_tokens\":";
   body += String(CHAT_MAX_TOKENS);
   body += ",\"messages\":[";
@@ -1857,7 +1862,8 @@ bool openRouterChat(const char *systemPrompt, const char *const *roles,
   body += "]}";
 
   Serial.printf("chat: stream model=%s msgs=%d body=%u heap=%u psram=%u\n",
-                CHAT_MODEL, count, (unsigned)body.length(),
+                (model && model[0]) ? model : CHAT_MODEL, count,
+                (unsigned)body.length(),
                 (unsigned)ESP.getFreeHeap(),
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
