@@ -55,7 +55,7 @@ bool settingsSetWifiPassword(const char *password);
 const char *settingsApPassword();
 bool settingsSetApPassword(const char *password);
 
-// Save Ask PCM to /audio/*.wav on SD (uses PSRAM; default off).
+// Save Make Photo PCM to /audio/*.wav on SD (uses PSRAM; default off).
 bool settingsSaveAudio();
 bool settingsSetSaveAudio(bool on);
 

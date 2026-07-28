@@ -403,13 +403,12 @@ void appLoop() {
 #include "window.h"
 #include "windows.h"
 #include "gallery_window.h"
-#include "ask_window.h"
 #include "storage.h"
 #include "settings.h"
 #include "status_window.h"
 
 // -----------------------------------------------------------------------------
-// UI shell: splash → Home → Ask / Gallery / Settings
+// UI shell: splash → Home → Make Photo / Ask / Gallery / Settings
 // -----------------------------------------------------------------------------
 
 void appSetup() {
@@ -417,7 +416,7 @@ void appSetup() {
   delay(800);
   inputBegin();
 
-  inputLog("chitram ui — Ask + Gallery + Settings");
+  inputLog("chitram ui — Make Photo + Ask + Gallery + Settings");
   displayBegin();
   reclaimDisplay();
   storageBegin();

@@ -480,7 +480,7 @@ void GalleryWindow::drawContent(int ox, int oy) {
     st.size = kUiBodySize;
     st.color = ILI9341_WHITE;
     st.flags = TextFlagWrap;
-    Text::draw("No images yet.\n\nAsk will save photos here.",
+    Text::draw("No images yet.\n\nMake Photo will save photos here.",
                (int16_t)kUiPadX, (int16_t)(contentTop() + 16 - scrollY()),
                (int16_t)(tft.width() - 2 * kUiPadX), st);
     return;

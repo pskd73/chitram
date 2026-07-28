@@ -40,9 +40,9 @@ static const char kSettingsHtml[] = R"HTML(
       </label>
       <label class="label cursor-pointer justify-start gap-3 py-1">
         <input type="checkbox" class="checkbox checkbox-primary" name="save_audio" value="1" {{save_audio_checked}}>
-        <span class="label-text">Save Ask audio to SD card</span>
+        <span class="label-text">Save Make Photo audio to SD card</span>
       </label>
-      <span class="label-text-alt text-base-content/60 -mt-2">Writes /audio/*.wav when Ask listens · uses extra PSRAM · default off</span>
+      <span class="label-text-alt text-base-content/60 -mt-2">Writes /audio/*.wav when Make Photo listens · uses extra PSRAM · default off</span>
       <button class="btn btn-primary mt-2" type="submit">Save</button>
     </form>
     <h2 class="settings-sub">Generation</h2>

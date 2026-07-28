@@ -19,6 +19,13 @@ public:
   int16_t fbWidth() const { return fbW_; }
   int16_t fbHeight() const { return fbH_; }
 
+  // When true, draw calls update the PSRAM mirror only (no SPI).
+  // Use with blitFbRect() to compose a frame then show it in one shot.
+  void setFbOnly(bool on) { fbOnly_ = on && fb_; }
+  bool fbOnly() const { return fbOnly_; }
+  // Copy a rectangle from the mirror to the panel.
+  void blitFbRect(int16_t x, int16_t y, int16_t w, int16_t h);
+
   void setAddrWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
 
   // High-level (self-contained transactions)
@@ -51,4 +58,6 @@ private:
   uint16_t awY_ = 0;
   uint16_t awW_ = 1;
   uint32_t awIdx_ = 0;
+  bool fbOnly_ = false;
+  bool skipMirror_ = false;
 };

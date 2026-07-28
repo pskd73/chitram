@@ -25,24 +25,37 @@ struct TextStyle {
 };
 
 struct TextMetrics {
-  int16_t endX = 0;   // after last glyph (or left if line ended empty)
-  int16_t endY = 0;   // top of last line
-  int16_t nextY = 0;  // endY + lineHeight — place next widget here
-  int16_t width = 0;  // widest line drawn/measured
-  int16_t height = 0; // total block height
-  int16_t lines = 0;
+  int endX = 0;   // after last glyph (or left if line ended empty)
+  int endY = 0;   // top of last line
+  int nextY = 0;  // endY + lineHeight — place next widget here
+  int width = 0;  // widest line drawn/measured
+  int height = 0; // total block height
+  int lines = 0;
 };
 
 // Reusable wrapped text. Use anywhere (title, menus, body, …).
 class Text {
 public:
-  static TextMetrics measure(const char *s, int16_t x, int16_t y, int16_t maxW,
+  static TextMetrics measure(const char *s, int x, int y, int maxW,
                              const TextStyle &style = TextStyle());
 
-  static TextMetrics draw(const char *s, int16_t x, int16_t y, int16_t maxW,
+  static TextMetrics draw(const char *s, int x, int y, int maxW,
                           const TextStyle &style = TextStyle());
 
+  // Count wrapped lines / pixel height (no draw). Same wrap rules as draw.
+  static int wrappedLineCount(const char *s, int maxW, uint8_t size);
+  static int wrappedHeight(const char *s, int maxW, uint8_t size);
+
+  // Advance past `linesToSkip` wrapped lines. Returns pointer into s.
+  // *skippedOut gets how many lines were actually skipped.
+  static const char *skipWrappedLines(const char *s, int maxW, uint8_t size,
+                                      int linesToSkip, int *skippedOut);
+
 private:
-  static TextMetrics layout(const char *s, int16_t x, int16_t y, int16_t maxW,
+  static TextMetrics layout(const char *s, int x, int y, int maxW,
                             const TextStyle &style, bool doDraw);
 };
+
+// Single-line hint centered in the content viewport (below the title bar).
+void textDrawCenteredHint(const char *s, int contentTop, uint8_t size = 2,
+                          uint16_t color = 0x7BEF);

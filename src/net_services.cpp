@@ -265,9 +265,14 @@ static bool clientReadChar(WiFiClientSecure &client, char &out, uint32_t deadlin
 }
 
 static bool skipHttpHeaders(WiFiClientSecure &client, bool &chunked,
-                            int &contentLen, uint32_t deadline) {
+                            int &contentLen, uint32_t deadline,
+                            int *httpStatus = nullptr) {
   chunked = false;
   contentLen = -1;
+  if (httpStatus) {
+    *httpStatus = 0;
+  }
+  bool first = true;
   String line;
   line.reserve(96);
   while (millis() < deadline) {
@@ -288,7 +293,15 @@ static bool skipHttpHeaders(WiFiClientSecure &client, bool &chunked,
       }
     }
     if (line.length() == 0) {
-      return true;  // end of headers
+      return true; // end of headers
+    }
+    if (first) {
+      first = false;
+      // HTTP/1.1 200 OK
+      const char *p = strchr(line.c_str(), ' ');
+      if (p && httpStatus) {
+        *httpStatus = atoi(p + 1);
+      }
     }
     line.toLowerCase();
     if (line.startsWith("transfer-encoding:") && line.indexOf("chunked") >= 0) {
@@ -1573,6 +1586,701 @@ bool drawImageZoomed(const char *path, int zoom, float panX, float panY) {
   thumbPanX = 0.5f;
   thumbPanY = 0.5f;
   return ok;
+}
+
+static void jsonEscapeAppend(String &out, const String &in) {
+  for (size_t i = 0; i < in.length(); ++i) {
+    char c = in[i];
+    switch (c) {
+    case '\\':
+      out += "\\\\";
+      break;
+    case '"':
+      out += "\\\"";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if ((uint8_t)c < 0x20) {
+        // skip other controls
+      } else {
+        out += c;
+      }
+      break;
+    }
+  }
+}
+
+static bool clientReadBodyToBuf(WiFiClientSecure &client, bool chunked,
+                                int contentLen, char *buf, size_t cap,
+                                size_t &outLen, uint32_t deadline) {
+  outLen = 0;
+  if (!buf || cap < 2) {
+    return false;
+  }
+  buf[0] = '\0';
+
+  auto push = [&](char c) -> bool {
+    if (outLen + 1 >= cap) {
+      return false;
+    }
+    buf[outLen++] = c;
+    buf[outLen] = '\0';
+    return true;
+  };
+
+  if (chunked) {
+    while (millis() < deadline) {
+      String sizeLine;
+      while (millis() < deadline) {
+        char c;
+        if (!clientReadChar(client, c, deadline)) {
+          return outLen > 0;
+        }
+        if (c == '\r') {
+          continue;
+        }
+        if (c == '\n') {
+          break;
+        }
+        if (sizeLine.length() < 16) {
+          sizeLine += c;
+        }
+      }
+      size_t chunk = (size_t)strtoul(sizeLine.c_str(), nullptr, 16);
+      if (chunk == 0) {
+        return true;
+      }
+      for (size_t i = 0; i < chunk; ++i) {
+        char c;
+        if (!clientReadChar(client, c, deadline)) {
+          return false;
+        }
+        if (!push(c)) {
+          return true; // truncated
+        }
+      }
+      char cr, lf;
+      (void)clientReadChar(client, cr, deadline);
+      (void)clientReadChar(client, lf, deadline);
+    }
+    return outLen > 0;
+  }
+
+  if (contentLen >= 0) {
+    for (int i = 0; i < contentLen && millis() < deadline; ++i) {
+      char c;
+      if (!clientReadChar(client, c, deadline)) {
+        break;
+      }
+      if (!push(c)) {
+        break;
+      }
+    }
+    return outLen > 0;
+  }
+
+  while (millis() < deadline) {
+    if (client.available()) {
+      char c;
+      if (!clientReadChar(client, c, deadline)) {
+        break;
+      }
+      if (!push(c)) {
+        break;
+      }
+    } else if (!client.connected()) {
+      break;
+    } else {
+      delay(1);
+      yield();
+    }
+  }
+  return outLen > 0;
+}
+
+static bool extractJsonStringValue(const char *json, size_t jsonLen, size_t from,
+                                   const char *key, String &out) {
+  if (!json || !key) {
+    return false;
+  }
+  const size_t keyLen = strlen(key);
+  size_t pos = from;
+  while (pos + keyLen + 2 < jsonLen) {
+    if (json[pos] == '"' && strncmp(json + pos + 1, key, keyLen) == 0 &&
+        json[pos + 1 + keyLen] == '"') {
+      size_t i = pos + 2 + keyLen;
+      while (i < jsonLen && (json[i] == ' ' || json[i] == '\t')) {
+        ++i;
+      }
+      if (i >= jsonLen || json[i] != ':') {
+        pos++;
+        continue;
+      }
+      ++i;
+      while (i < jsonLen && (json[i] == ' ' || json[i] == '\t' || json[i] == '\n' ||
+                             json[i] == '\r')) {
+        ++i;
+      }
+      if (i >= jsonLen || json[i] != '"') {
+        return false;
+      }
+      ++i;
+      out = "";
+      out.reserve(512);
+      while (i < jsonLen) {
+        char c = json[i++];
+        if (c == '\\' && i < jsonLen) {
+          char n = json[i++];
+          switch (n) {
+          case 'n':
+            out += '\n';
+            break;
+          case 'r':
+            out += '\r';
+            break;
+          case 't':
+            out += '\t';
+            break;
+          case '"':
+          case '\\':
+          case '/':
+            out += n;
+            break;
+          case 'u':
+            i += 4;
+            out += '?';
+            break;
+          default:
+            out += n;
+            break;
+          }
+          continue;
+        }
+        if (c == '"') {
+          return out.length() > 0;
+        }
+        out += c;
+      }
+      return out.length() > 0;
+    }
+    pos++;
+  }
+  return false;
+}
+
+static bool extractAssistantContent(const char *json, size_t jsonLen,
+                                    String &out) {
+  if (!json || jsonLen == 0) {
+    return false;
+  }
+  const char *choices = strstr(json, "\"choices\"");
+  if (!choices) {
+    return false;
+  }
+  size_t from = (size_t)(choices - json);
+  const char *message = strstr(choices, "\"message\"");
+  if (message) {
+    from = (size_t)(message - json);
+  }
+  return extractJsonStringValue(json, jsonLen, from, "content", out);
+}
+
+bool openRouterChat(const char *systemPrompt, const char *const *roles,
+                    const char *const *contents, int count, char **outOwned,
+                    size_t *outLen, ChatChunkCb onChunk, void *chunkCtx) {
+  if (outOwned) {
+    *outOwned = nullptr;
+  }
+  if (outLen) {
+    *outLen = 0;
+  }
+  if (!outOwned || !outLen) {
+    return false;
+  }
+  if (String(OPENROUTER_API_KEY).length() < 8 ||
+      String(OPENROUTER_API_KEY) == "REPLACE_ME" ||
+      String(OPENROUTER_API_KEY).startsWith("sk-or-v1-...")) {
+    Serial.println("ERR set OPENROUTER_API_KEY in secrets.h");
+    return false;
+  }
+  if (!roles || !contents || count < 1) {
+    return false;
+  }
+
+  deepgramClearText();
+  displayResetTranscriptCache();
+
+  if (WiFi.status() != WL_CONNECTED && !connectWifi()) {
+    return false;
+  }
+
+  String body;
+  body.reserve(1024 + (size_t)count * 256);
+  body += "{\"model\":\"";
+  body += CHAT_MODEL;
+  body += "\",\"stream\":true,\"temperature\":0.7,\"max_tokens\":";
+  body += String(CHAT_MAX_TOKENS);
+  body += ",\"messages\":[";
+  bool first = true;
+  if (systemPrompt && systemPrompt[0]) {
+    body += "{\"role\":\"system\",\"content\":\"";
+    jsonEscapeAppend(body, String(systemPrompt));
+    body += "\"}";
+    first = false;
+  }
+  for (int i = 0; i < count; ++i) {
+    if (!roles[i] || !roles[i][0] || !contents[i]) {
+      continue;
+    }
+    if (!first) {
+      body += ',';
+    }
+    first = false;
+    body += "{\"role\":\"";
+    body += roles[i];
+    body += "\",\"content\":\"";
+    String piece = contents[i];
+    if (piece.length() > 4000) {
+      piece = piece.substring(0, 4000);
+    }
+    jsonEscapeAppend(body, piece);
+    body += "\"}";
+  }
+  body += "]}";
+
+  Serial.printf("chat: stream model=%s msgs=%d body=%u heap=%u psram=%u\n",
+                CHAT_MODEL, count, (unsigned)body.length(),
+                (unsigned)ESP.getFreeHeap(),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+  reclaimDisplay();
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setHandshakeTimeout(30);
+  client.setTimeout(60);
+
+  if (!client.connect(OR_HOST, 443, 20000)) {
+    Serial.println("ERR OpenRouter chat TLS failed");
+    return false;
+  }
+
+  client.print(String("POST ") + OR_CHAT_PATH + " HTTP/1.1\r\n");
+  client.print(String("Host: ") + OR_HOST + "\r\n");
+  client.print(String("Authorization: Bearer ") + OPENROUTER_API_KEY + "\r\n");
+  client.print("Content-Type: application/json\r\n");
+  client.print("HTTP-Referer: https://github.com/chitram\r\n");
+  client.print("X-Title: chitram\r\n");
+  client.print("Accept: text/event-stream\r\n");
+  client.print(String("Content-Length: ") + body.length() + "\r\n");
+  client.print("Connection: close\r\n\r\n");
+  if (!clientWriteAll(client, body.c_str(), body.length())) {
+    Serial.println("ERR chat body write");
+    client.stop();
+    return false;
+  }
+  body = "";
+
+  uint32_t deadline = millis() + 180000;
+  bool chunked = false;
+  int contentLen = -1;
+  int httpStatus = 0;
+  if (!skipHttpHeaders(client, chunked, contentLen, deadline, &httpStatus)) {
+    Serial.println("ERR chat headers");
+    client.stop();
+    return false;
+  }
+  if (httpStatus != 200) {
+    Serial.printf("ERR chat HTTP %d\n", httpStatus);
+    // Drain a bit of error body for logs.
+    char errBuf[256];
+    size_t n = 0;
+    while (n + 1 < sizeof(errBuf) && millis() < deadline) {
+      char c;
+      if (!clientReadChar(client, c, deadline)) {
+        break;
+      }
+      errBuf[n++] = c;
+    }
+    errBuf[n] = '\0';
+    if (n) {
+      Serial.println(errBuf);
+    }
+    client.stop();
+    return false;
+  }
+
+  // Accumulate assistant text in PSRAM (not the raw SSE).
+  char *acc = (char *)heap_caps_malloc(CHAT_REPLY_MAX,
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!acc) {
+    acc = (char *)malloc(CHAT_REPLY_MAX);
+  }
+  if (!acc) {
+    Serial.println("ERR chat acc alloc");
+    client.stop();
+    return false;
+  }
+  size_t accLen = 0;
+  acc[0] = '\0';
+
+  uint32_t lastCbMs = 0;
+  bool done = false;
+  size_t sinceCb = 0;
+  size_t lastLogLen = 0;
+
+  auto appendChar = [&](char c) -> bool {
+    if (accLen + 2 >= CHAT_REPLY_MAX) {
+      Serial.println("WARN chat reply hit CHAT_REPLY_MAX");
+      return false;
+    }
+    acc[accLen++] = c;
+    acc[accLen] = '\0';
+    ++sinceCb;
+    return true;
+  };
+
+  auto maybeChunkCb = [&](bool force) {
+    if (!accLen) {
+      return;
+    }
+    uint32_t now = millis();
+    if (!(force || now - lastCbMs >= 200 || sinceCb > 40)) {
+      return;
+    }
+    lastCbMs = now;
+    // Log newly arrived text (escape newlines for one-line serial).
+    if (accLen > lastLogLen) {
+      Serial.printf("chat: stream +%u total=%u \"",
+                    (unsigned)(accLen - lastLogLen), (unsigned)accLen);
+      const size_t maxPrint = 120;
+      size_t i = lastLogLen;
+      size_t printed = 0;
+      for (; i < accLen && printed < maxPrint; ++i, ++printed) {
+        char c = acc[i];
+        if (c == '\n') {
+          Serial.print("\\n");
+        } else if (c == '\r') {
+          Serial.print("\\r");
+        } else if (c == '"') {
+          Serial.print("\\\"");
+        } else if ((uint8_t)c < 32 || (uint8_t)c > 126) {
+          Serial.printf("\\x%02x", (unsigned)(uint8_t)c);
+        } else {
+          Serial.print(c);
+        }
+      }
+      if (i < accLen) {
+        Serial.print("...");
+      }
+      Serial.println("\"");
+      lastLogLen = accLen;
+    }
+    sinceCb = 0;
+    if (onChunk) {
+      onChunk(chunkCtx, acc, accLen);
+    }
+  };
+
+  // Byte-wise SSE parse: never buffer full events. OpenRouter often puts a
+  // large reasoning/usage payload on the same line as a tiny delta.content;
+  // a fixed line buffer would overflow and drop that content.
+  enum class Ps : uint8_t {
+    LineStart,
+    MatchData,
+    DataSp,
+    Body,
+    Cont,
+    EscCont,
+    UniCont,
+    SkipLine,
+  };
+  Ps st = Ps::LineStart;
+  uint8_t dataM = 0;
+  bool sawDelta = false;
+  bool gotContent = false;
+  uint8_t deltaM = 0;
+  uint8_t contM = 0; // "content" match after delta
+  // After "content": skip ws, require ':', skip ws, require '"'
+  enum class AfterCont : uint8_t { NeedColon, NeedQuote };
+  AfterCont afterCont = AfterCont::NeedColon;
+  bool inAfterCont = false;
+  uint8_t doneM = 0;
+  uint8_t uniLeft = 0;
+  static const char kData[] = "data";
+  static const char kDelta[] = "\"delta\"";
+  static const char kContent[] = "\"content\"";
+  static const char kDone[] = "[DONE]";
+
+  auto resetEvent = [&]() {
+    sawDelta = false;
+    gotContent = false;
+    deltaM = 0;
+    contM = 0;
+    inAfterCont = false;
+    afterCont = AfterCont::NeedColon;
+    doneM = 0;
+  };
+
+  auto feedBody = [&](char c) {
+    if (st == Ps::Cont) {
+      if (c == '\\') {
+        st = Ps::EscCont;
+        return;
+      }
+      if (c == '"') {
+        st = Ps::Body;
+        maybeChunkCb(false);
+        return;
+      }
+      if (!appendChar(c)) {
+        done = true;
+      }
+      return;
+    }
+    if (st == Ps::EscCont) {
+      if (c == 'u') {
+        if (!appendChar('?')) {
+          done = true;
+        }
+        st = Ps::UniCont;
+        uniLeft = 4;
+        return;
+      }
+      char out = c;
+      if (c == 'n') {
+        out = '\n';
+      } else if (c == 'r') {
+        out = '\r';
+      } else if (c == 't') {
+        out = '\t';
+      }
+      if (!appendChar(out)) {
+        done = true;
+      }
+      st = Ps::Cont;
+      return;
+    }
+    if (st == Ps::UniCont) {
+      if (uniLeft) {
+        --uniLeft;
+      }
+      if (!uniLeft) {
+        st = Ps::Cont;
+      }
+      return;
+    }
+
+    // Body: hunt [DONE], "delta", then "content" : "
+    if (c == kDone[doneM]) {
+      if (++doneM == sizeof(kDone) - 1) {
+        done = true;
+        doneM = 0;
+        return;
+      }
+    } else {
+      doneM = (c == kDone[0]) ? 1 : 0;
+    }
+
+    if (!sawDelta) {
+      if (c == kDelta[deltaM]) {
+        if (++deltaM == sizeof(kDelta) - 1) {
+          sawDelta = true;
+          deltaM = 0;
+          contM = 0;
+          inAfterCont = false;
+        }
+      } else {
+        deltaM = (c == kDelta[0]) ? 1 : 0;
+      }
+      return;
+    }
+
+    if (gotContent) {
+      return;
+    }
+
+    if (!inAfterCont) {
+      if (c == kContent[contM]) {
+        if (++contM == sizeof(kContent) - 1) {
+          contM = 0;
+          inAfterCont = true;
+          afterCont = AfterCont::NeedColon;
+        }
+      } else {
+        contM = (c == kContent[0]) ? 1 : 0;
+      }
+      return;
+    }
+
+    if (afterCont == AfterCont::NeedColon) {
+      if (c == ' ' || c == '\t') {
+        return;
+      }
+      if (c == ':') {
+        afterCont = AfterCont::NeedQuote;
+        return;
+      }
+      inAfterCont = false;
+      contM = (c == kContent[0]) ? 1 : 0;
+      return;
+    }
+    // NeedQuote
+    if (c == ' ' || c == '\t') {
+      return;
+    }
+    if (c == '"') {
+      st = Ps::Cont;
+      inAfterCont = false;
+      contM = 0;
+      gotContent = true;
+      return;
+    }
+    inAfterCont = false;
+    contM = (c == kContent[0]) ? 1 : 0;
+  };
+
+  auto feedByte = [&](char c) {
+    if (c == '\r') {
+      return;
+    }
+    if (c == '\n') {
+      if (st == Ps::Cont || st == Ps::EscCont || st == Ps::UniCont) {
+        st = Ps::Body;
+        maybeChunkCb(false);
+      }
+      resetEvent();
+      st = Ps::LineStart;
+      dataM = 0;
+      return;
+    }
+
+    switch (st) {
+    case Ps::LineStart:
+      if (c == ':') {
+        st = Ps::SkipLine;
+        return;
+      }
+      if (c == 'd' || c == 'D') {
+        st = Ps::MatchData;
+        dataM = 1;
+        return;
+      }
+      st = Ps::SkipLine;
+      return;
+    case Ps::MatchData:
+      if (dataM < 4) {
+        char want = kData[dataM];
+        char up = (char)(want - 'a' + 'A');
+        if (c == want || c == up) {
+          ++dataM;
+          return;
+        }
+        st = Ps::SkipLine;
+        dataM = 0;
+        return;
+      }
+      // dataM == 4, expect ':'
+      if (c == ':') {
+        st = Ps::DataSp;
+        dataM = 0;
+        resetEvent();
+        return;
+      }
+      st = Ps::SkipLine;
+      dataM = 0;
+      return;
+    case Ps::DataSp:
+      if (c == ' ') {
+        return;
+      }
+      st = Ps::Body;
+      feedBody(c);
+      return;
+    case Ps::SkipLine:
+      return;
+    default:
+      feedBody(c);
+      return;
+    }
+  };
+
+  if (chunked) {
+    while (!done && millis() < deadline) {
+      String sizeLine;
+      while (millis() < deadline) {
+        char c;
+        if (!clientReadChar(client, c, deadline)) {
+          done = true;
+          break;
+        }
+        if (c == '\r') {
+          continue;
+        }
+        if (c == '\n') {
+          break;
+        }
+        if (sizeLine.length() < 16) {
+          sizeLine += c;
+        }
+      }
+      if (done) {
+        break;
+      }
+      size_t chunk = (size_t)strtoul(sizeLine.c_str(), nullptr, 16);
+      if (chunk == 0) {
+        break;
+      }
+      for (size_t i = 0; i < chunk && !done; ++i) {
+        char c;
+        if (!clientReadChar(client, c, deadline)) {
+          done = true;
+          break;
+        }
+        feedByte(c);
+      }
+      char cr, lf;
+      (void)clientReadChar(client, cr, deadline);
+      (void)clientReadChar(client, lf, deadline);
+    }
+  } else {
+    while (!done && millis() < deadline) {
+      if (client.available()) {
+        char c;
+        if (!clientReadChar(client, c, deadline)) {
+          break;
+        }
+        feedByte(c);
+      } else if (!client.connected()) {
+        break;
+      } else {
+        delay(1);
+        yield();
+      }
+    }
+  }
+  client.stop();
+
+  maybeChunkCb(true);
+
+  if (accLen == 0) {
+    Serial.println("ERR chat stream empty");
+    free(acc);
+    return false;
+  }
+
+  Serial.printf("chat: stream reply %u chars finish_ok\n", (unsigned)accLen);
+  *outOwned = acc;
+  *outLen = accLen;
+  return true;
 }
 
 bool littlefsBegin() { return storageBegin(); }

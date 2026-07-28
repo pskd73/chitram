@@ -91,6 +91,7 @@ void Window::drawChrome() {
   tft.drawFastHLine(0, kWinTitleH - 1, w, 0x8410);
 
   int textX = kUiPadX;
+  int textRight = w - kUiPadX;
   const char *iconId = icon();
   if (iconId && iconId[0] && Icon::exists(iconId)) {
     const int iconY = (kWinTitleH - Icon::kSize) / 2;
@@ -99,12 +100,26 @@ void Window::drawChrome() {
     textX += Icon::kSize + 6;
   }
 
+  const char *statusId = statusIcon();
+  if (statusId && statusId[0] && Icon::exists(statusId)) {
+    const int iconY = (kWinTitleH - Icon::kSize) / 2;
+    const int statusX = w - kUiPadX - Icon::kSize;
+    Icon(statusId).draw((int16_t)statusX, (int16_t)iconY, statusIconColor(),
+                        chromeBg);
+    textRight = statusX - 6;
+  }
+
+  int titleW = textRight - textX;
+  if (titleW < 8) {
+    titleW = 8;
+  }
+
   TextStyle st;
   st.size = kUiTitleSize;
   st.color = ILI9341_WHITE;
   st.flags = TextFlagNoWrap | TextFlagTruncate;
   st.maxLines = 1;
-  Text::draw(title(), (int16_t)textX, 8, (int16_t)(w - textX - kUiPadX), st);
+  Text::draw(title(), (int16_t)textX, 8, (int16_t)titleW, st);
 }
 
 void Window::drawContentArea() {
@@ -112,8 +127,14 @@ void Window::drawContentArea() {
   const int w = tft.width();
   const int h = tft.height();
   const int top = contentTop();
+
+  // Compose into PSRAM mirror then blit once — avoids black-flash scroll.
+  const bool smooth = tft.framebuffer() != nullptr;
+  if (smooth) {
+    tft.setFbOnly(true);
+  }
+
   if (hasTitleBar()) {
-    // Leave title bar pixels alone
     tft.fillRect(0, top, w, h - top, ILI9341_BLACK);
   } else {
     tft.fillScreen(ILI9341_BLACK);
@@ -121,6 +142,16 @@ void Window::drawContentArea() {
   uiClipSet((int16_t)top, (int16_t)h);
   drawContent(0, top - scrollY_);
   uiClipClear();
+
+  if (smooth) {
+    tft.setFbOnly(false);
+    // Blit content only — leave the title bar pixels untouched on the panel.
+    if (hasTitleBar()) {
+      tft.blitFbRect(0, top, w, h - top);
+    } else {
+      tft.blitFbRect(0, 0, w, h);
+    }
+  }
 }
 
 void Window::draw() {

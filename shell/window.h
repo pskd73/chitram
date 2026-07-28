@@ -18,6 +18,9 @@ public:
   virtual const char *title() const = 0;
   // Optional Icon id for the title bar (left of title). nullptr = none.
   virtual const char *icon() const { return nullptr; }
+  // Optional status icon on the title bar right. nullptr = none.
+  virtual const char *statusIcon() const { return nullptr; }
+  virtual uint16_t statusIconColor() const { return 0xFFFF; }
   // Override to false for fullscreen windows (e.g. photo viewer).
   virtual bool hasTitleBar() const { return true; }
   virtual void onEnter();

@@ -34,6 +34,7 @@ private:
   const uint8_t *bitmap_;
 };
 
-// Known ids: home, chat/message/ask, mic, gallery, image, gear, settings,
-// info, about, wifi, storage, display, sound, debug, check, back,
-// bin/trash/delete, zoom_in/zoomin, zoom_out/zoomout
+// Known ids: home, chat/message/ask, mic, record/rec, loading/wait/busy,
+// brain/think/thinking, gallery, image, gear, settings, info, about, wifi,
+// storage, display, sound, debug, check, back, bin/trash/delete,
+// zoom_in/zoomin, zoom_out/zoomout

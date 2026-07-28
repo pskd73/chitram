@@ -17,20 +17,15 @@ static const uint16_t kBubbleFg  = 0x18C3;
 static const uint16_t kBubblePad = 10;
 static const int      kBubbleR   = 12;
 
-static MenuItem kConfirmItems[] = {
-    {"Confirm",   0, "check",  false, nullptr},
-    {"Re-record", 1, "chat",   false, nullptr},
-    {"Cancel",    2, "back",   false, nullptr},
-};
-static const int kConfirmN = 3;
-
 class SttInputWindow : public Window {
 public:
-  void init(const char *title, const char *icon,
-            SttConfirmCb onConfirm, SttCancelCb onCancel, void *ctx);
+  void init(const char *title, const char *icon, SttConfirmCb onConfirm,
+            SttCancelCb onCancel, void *ctx, const SttInputOpts &opts);
 
   const char *title() const override { return title_; }
   const char *icon()  const override { return icon_; }
+  const char *statusIcon() const override;
+  uint16_t statusIconColor() const override;
 
   void onEnter() override;
   void onExit()  override;
@@ -44,6 +39,10 @@ private:
   SttConfirmCb confirmCb_ = nullptr;
   SttCancelCb  cancelCb_  = nullptr;
   void *ctx_ = nullptr;
+  bool autoConfirm_ = false;
+  const char *confirmLabel_ = nullptr;
+  const char *rerecordLabel_ = nullptr;
+  const char *cancelLabel_ = nullptr;
 
   String transcript_;
   String lastBubbleText_;
@@ -51,6 +50,7 @@ private:
   int16_t bubbleH_ = 0;
   int16_t menuY_   = 0;
   uint32_t lastUiMs_ = 0;
+  MenuItem confirmItems_[3] = {};
   Menu confirmMenu_;
 
   static void onSttDone(void *ctx, const String &text);
@@ -82,12 +82,16 @@ void SttInputWindow::onSttDone(void *ctx, const String &text) {
   SttInputWindow *w = static_cast<SttInputWindow *>(ctx);
   w->transcript_ = text;
   w->lastBubbleText_ = "";
-  w->drawContentArea();
+  if (w->autoConfirm_) {
+    w->doConfirm();
+    return;
+  }
+  w->draw(); // content + clear record status icon
 }
 
 void SttInputWindow::onSttError(void *ctx, const char * /*reason*/) {
   SttInputWindow *w = static_cast<SttInputWindow *>(ctx);
-  w->drawContentArea();
+  w->draw();
 }
 
 void SttInputWindow::onSttDraw(void *ctx) {
@@ -98,16 +102,36 @@ void SttInputWindow::onSttDraw(void *ctx) {
 
 void SttInputWindow::init(const char *title, const char *icon,
                           SttConfirmCb onConfirm, SttCancelCb onCancel,
-                          void *ctx) {
-  title_     = title ? title : "Input";
-  icon_      = icon  ? icon  : "chat";
+                          void *ctx, const SttInputOpts &opts) {
+  title_ = title ? title : "Input";
+  icon_ = icon ? icon : "chat";
   confirmCb_ = onConfirm;
-  cancelCb_  = onCancel;
-  ctx_       = ctx;
+  cancelCb_ = onCancel;
+  ctx_ = ctx;
+  autoConfirm_ = opts.autoConfirm;
+  confirmLabel_ = opts.confirmLabel;
+  rerecordLabel_ = opts.rerecordLabel;
+  cancelLabel_ = opts.cancelLabel;
 }
 
+const char *SttInputWindow::statusIcon() const {
+  SttState st = gSttSession.state();
+  if (st == SttState::Connecting || st == SttState::Listening) {
+    return "record";
+  }
+  return nullptr;
+}
+
+uint16_t SttInputWindow::statusIconColor() const { return ILI9341_RED; }
+
 void SttInputWindow::setupMenu() {
-  confirmMenu_.setItems(kConfirmItems, kConfirmN);
+  confirmItems_[0] = {confirmLabel_ ? confirmLabel_ : "Confirm", 0, "check",
+                      false, nullptr};
+  confirmItems_[1] = {rerecordLabel_ ? rerecordLabel_ : "Re-record", 1, "chat",
+                      false, nullptr};
+  confirmItems_[2] = {cancelLabel_ ? cancelLabel_ : "Cancel", 2, "back", false,
+                      nullptr};
+  confirmMenu_.setItems(confirmItems_, 3);
   confirmMenu_.setWrapNavigation(true);
   confirmMenu_.setPadX(kUiPadX);
   confirmMenu_.setClip(contentTop(), tft.height());
@@ -379,8 +403,8 @@ void SttInputWindow::drawContent(int ox, int oy) {
 // ---- factory ----
 
 Window *windowSttInput(const char *title, const char *icon,
-                       SttConfirmCb onConfirm, SttCancelCb onCancel,
-                       void *ctx) {
-  sSttInput.init(title, icon, onConfirm, onCancel, ctx);
+                       SttConfirmCb onConfirm, SttCancelCb onCancel, void *ctx,
+                       const SttInputOpts &opts) {
+  sSttInput.init(title, icon, onConfirm, onCancel, ctx, opts);
   return &sSttInput;
 }

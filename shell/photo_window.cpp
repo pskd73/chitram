@@ -1,6 +1,6 @@
 #include "photo_window.h"
 
-#include "ask_window.h"
+#include "make_photo_window.h"
 #include "display.h"
 #include "gallery.h"
 #include "image_draw.h"
@@ -321,7 +321,7 @@ static void onPhotoMenuSelect(int index, const MenuItem &item) {
     break;
   case 3: // Edit — drop menu + photo
     if (sPhotoMenuPath[0]) {
-      gWindows.replaceTop(windowAskModify(sPhotoMenuPath), 2);
+      gWindows.replaceTop(windowMakePhotoModify(sPhotoMenuPath), 2);
     }
     break;
   case 4: // Delete — drop menu + photo in one pop (no deleted-file flash)

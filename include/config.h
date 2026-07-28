@@ -77,7 +77,7 @@
 #define STREAM_CHUNK_SAMPLES 800
 #define AUDIO_REC_MAX_SECONDS 15
 #define MAX_LISTEN_MS (5UL * 60UL * 1000UL)
-// Auto-stop Ask listen after this much with no new speech (post first speech)
+// Auto-stop Make Photo listen after this much with no new speech (post first speech)
 #define SILENCE_STOP_MS 2000UL
 // Mic peak must reach this to count as sound (AGC targets ~7000)
 #define SILENCE_SOUND_PEAK 3500
@@ -88,12 +88,17 @@
 #define AGC_GAIN_MAX 5.0f
 #define AGC_GAIN_SLEW 0.0012f
 
-// Temp: skip WiFi/Deepgram — mic ring → SD WAV only (Ask = record test).
+// Temp: skip WiFi/Deepgram — mic ring → SD WAV only (Make Photo = record test).
 // #define CHITRAM_AUDIO_ONLY 1
 
 #define OR_HOST "openrouter.ai"
 #define OR_IMAGE_PATH "/api/v1/images"
+#define OR_CHAT_PATH "/api/v1/chat/completions"
 #define IMAGE_MODEL "google/gemini-3.1-flash-lite-image"
+// Ask (Deepgram STT → OpenRouter chat)
+#define CHAT_MODEL "openai/gpt-5-nano"
+#define CHAT_MAX_TOKENS 8192
+#define CHAT_REPLY_MAX 48000 // accumulated assistant text (PSRAM)
 #define IMAGE_FS_PATH "/gen.bin"
 #define B64_WRITE_CHUNK 256
 
