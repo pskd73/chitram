@@ -76,15 +76,9 @@ static void finishListen() {
   reclaimDisplay();
   showStatus("Finishing...");
 
+  deepgramPromoteInterim();
   deepgramFinalizeAndClose();
-
-  if (deepgramInterimText().length()) {
-    if (deepgramFinalText().length()) {
-      deepgramFinalText() += ' ';
-    }
-    deepgramFinalText() += deepgramInterimText();
-    deepgramInterimText() = "";
-  }
+  deepgramPromoteInterim();
 
   String combined = deepgramFinalText();
 

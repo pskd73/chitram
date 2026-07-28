@@ -21,5 +21,7 @@ void deepgramClearText();
 size_t deepgramFinalLength();
 // Thread-safe snapshot for UI while dg_io task is running.
 String deepgramCopyListeningText();
+// Merge interim into final without duplicating (safe across Finalize).
+void deepgramPromoteInterim();
 // True once after Deepgram UtteranceEnd (clears the latch).
 bool deepgramTakeUtteranceEnd();

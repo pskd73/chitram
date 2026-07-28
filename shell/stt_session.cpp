@@ -200,24 +200,11 @@ void SttSession::teardown(bool finalize) {
 
 #if !defined(CHITRAM_AUDIO_ONLY)
   if (finalize) {
-    // Promote any remaining interim to final before snapshotting.
-    if (deepgramInterimText().length()) {
-      if (deepgramFinalText().length()) {
-        deepgramFinalText() += ' ';
-      }
-      deepgramFinalText() += deepgramInterimText();
-      deepgramInterimText() = "";
-    }
+    // Commit interim, then Finalize (may re-send last segment — deduped).
+    deepgramPromoteInterim();
     transcript_ = deepgramFinalText();
     deepgramFinalizeAndClose(400, 200);
-    // Capture any late finals that arrived during finalize.
-    if (deepgramInterimText().length()) {
-      if (deepgramFinalText().length()) {
-        deepgramFinalText() += ' ';
-      }
-      deepgramFinalText() += deepgramInterimText();
-      deepgramInterimText() = "";
-    }
+    deepgramPromoteInterim();
     transcript_ = deepgramFinalText();
   } else {
     closeDeepgram();

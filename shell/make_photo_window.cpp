@@ -24,8 +24,9 @@ static MenuItem kDoneMenuItems[] = {
 static const int kDoneMenuN = 3;
 static const uint16_t kBubbleBg = 0xE71C;
 static const uint16_t kBubbleFg = 0x18C3;
-static const uint16_t kBubblePad = 10;
+static const uint16_t kBubblePad = 8;
 static const int kBubbleRadius = 12;
+static const uint8_t kMakeTextSize = 1;
 
 enum class MakePhase : uint8_t {
   Idle,
@@ -54,9 +55,10 @@ private:
   MakePhase phase_ = MakePhase::Idle;
   String transcript_;
   char sourcePath_[48] = {};
-  int16_t bubbleY_ = 0;
-  int16_t bubbleH_ = 0;
-  int16_t menuY_ = 0;
+  int bubbleY_ = 0;
+  int bubbleH_ = 0;
+  int menuY_ = 0;
+  int contentH_ = 0;
   bool autoListen_ = false;
   Menu doneMenu_;
 
@@ -69,10 +71,14 @@ private:
   void goIdle();
   void setupDoneMenu();
   void paintDoneMenu();
-  int16_t measureBubbleHeight(const char *text, int16_t innerW) const;
-  void drawBubble(int16_t x, int16_t y, int16_t w, int16_t h, const char *text);
+  int menuBlockHeight() const;
+  int fixedMenuTop() const;
+  int measureBubbleHeight(const char *text, int innerW) const;
+  void drawBubble(int x, int y, int w, int h, const char *text, int clipBottom);
   void paintReady(int ox, int oy);
   void paintIdle(int ox, int oy);
+
+  int scrollContentHeight() const override { return contentH_; }
 };
 
 static MakePhotoWindow sMakePhoto;
@@ -87,6 +93,7 @@ void MakePhotoWindow::onListenConfirm(void *ctx, const char *text) {
   }
   w->transcript_ = t;
   w->phase_ = MakePhase::Ready;
+  w->setScrollY(0);
   w->setupDoneMenu();
   w->draw();
   inputLog("make: confirmed \"%s\"", t.c_str());
@@ -119,38 +126,49 @@ void MakePhotoWindow::setSourcePath(const char *path) {
   sourcePath_[sizeof(sourcePath_) - 1] = '\0';
 }
 
-int16_t MakePhotoWindow::measureBubbleHeight(const char *text,
-                                             int16_t innerW) const {
+int MakePhotoWindow::menuBlockHeight() const {
+  return doneMenu_.contentHeight() + 8;
+}
+
+int MakePhotoWindow::fixedMenuTop() const {
+  return tft.height() - menuBlockHeight();
+}
+
+int MakePhotoWindow::measureBubbleHeight(const char *text, int innerW) const {
   TextStyle st;
-  st.size = kUiBodySize;
+  st.size = kMakeTextSize;
   st.flags = TextFlagWrap;
   TextMetrics m = Text::measure(text, 0, 0, innerW, st);
   int h = m.height + 2 * kBubblePad;
-  if (h < 40) {
-    h = 40;
-  }
-  return (int16_t)h;
+  return h < 36 ? 36 : h;
 }
 
-void MakePhotoWindow::drawBubble(int16_t x, int16_t y, int16_t w, int16_t h,
-                                 const char *text) {
+void MakePhotoWindow::drawBubble(int x, int y, int w, int h, const char *text,
+                                 int clipBottom) {
   reclaimDisplay();
   int16_t y0, y1;
-  if (!uiClipSpan(y, h, &y0, &y1)) {
+  if (!uiClipSpan((int16_t)y, (int16_t)h, &y0, &y1)) {
     return;
   }
-  if (y >= contentTop() && y + h <= tft.height()) {
+  if (clipBottom > 0 && y1 > clipBottom) {
+    y1 = (int16_t)clipBottom;
+  }
+  if (y0 >= y1) {
+    return;
+  }
+  const int clipBot = clipBottom > 0 ? clipBottom : (int)tft.height();
+  if (y >= contentTop() && y + h <= clipBot) {
     tft.fillRoundRect(x, y, w, h, kBubbleRadius, kBubbleBg);
   } else {
     tft.fillRect(x, y0, w, y1 - y0, kBubbleBg);
   }
 
   TextStyle st;
-  st.size = kUiBodySize;
+  st.size = kMakeTextSize;
   st.color = kBubbleFg;
   st.flags = TextFlagWrap;
-  st.clipTop = contentTop();
-  st.clipBottom = tft.height();
+  st.clipTop = (int16_t)contentTop();
+  st.clipBottom = (int16_t)clipBot;
   Text::draw(text, (int16_t)(x + kBubblePad), (int16_t)(y + kBubblePad),
              (int16_t)(w - 2 * kBubblePad), st);
 }
@@ -158,6 +176,8 @@ void MakePhotoWindow::drawBubble(int16_t x, int16_t y, int16_t w, int16_t h,
 void MakePhotoWindow::goIdle() {
   phase_ = MakePhase::Idle;
   transcript_ = "";
+  contentH_ = viewportHeight();
+  setScrollY(0);
   draw();
 }
 
@@ -201,6 +221,7 @@ void MakePhotoWindow::onEnter() {
   Window::onEnter();
   transcript_ = "";
   phase_ = MakePhase::Idle;
+  contentH_ = viewportHeight();
   setupDoneMenu();
   autoListen_ = true;
 }
@@ -220,6 +241,18 @@ void MakePhotoWindow::onTick() {
 
 bool MakePhotoWindow::onEvent(JoyEvent e) {
   if (phase_ == MakePhase::Ready) {
+    if (e == JoyEvent::Up || e == JoyEvent::Down) {
+      if (maxScroll() > 0) {
+        const int step = textLineH(kMakeTextSize);
+        if (e == JoyEvent::Up) {
+          scrollBy(-step);
+        } else {
+          scrollBy(step);
+        }
+        drawContentArea();
+      }
+      return true;
+    }
     if (e == JoyEvent::Ok) {
       const int focus = doneMenu_.focusedIndex();
       if (focus == 0) {
@@ -264,21 +297,22 @@ void MakePhotoWindow::paintIdle(int ox, int oy) {
 }
 
 void MakePhotoWindow::paintReady(int ox, int oy) {
-  const int16_t maxW = (int16_t)(tft.width() - 2 * kUiPadX);
-  const int16_t bubbleX = (int16_t)(ox + kUiPadX);
-  bubbleY_ = (int16_t)(oy + 12);
+  const int maxW = tft.width() - 2 * kUiPadX;
+  const int bubbleX = ox + kUiPadX;
+  const int menuH = menuBlockHeight();
+  const int menuTop = fixedMenuTop();
+  bubbleY_ = oy + 12;
 
-  const int16_t innerW = (int16_t)(maxW - 2 * kBubblePad);
+  const int innerW = maxW - 2 * kBubblePad;
   bubbleH_ = measureBubbleHeight(transcript_.c_str(), innerW);
 
-  const int menuBlock = doneMenu_.contentHeight() + 8;
-  const int maxBubble = tft.height() - bubbleY_ - menuBlock;
-  if (bubbleH_ > maxBubble && maxBubble > 40) {
-    bubbleH_ = (int16_t)maxBubble;
+  contentH_ = 12 + bubbleH_ + menuH;
+  if (contentH_ < viewportHeight()) {
+    contentH_ = viewportHeight();
   }
 
-  drawBubble(bubbleX, bubbleY_, maxW, bubbleH_, transcript_.c_str());
-  menuY_ = (int16_t)(bubbleY_ + bubbleH_ + 12);
+  drawBubble(bubbleX, bubbleY_, maxW, bubbleH_, transcript_.c_str(), menuTop);
+  menuY_ = menuTop;
   paintDoneMenu();
 }
 

@@ -12,10 +12,12 @@
 #include <Adafruit_ILI9341.h>
 #include <string.h>
 
-static const uint16_t kBubbleBg  = 0xE71C;
-static const uint16_t kBubbleFg  = 0x18C3;
-static const uint16_t kBubblePad = 10;
-static const int      kBubbleR   = 12;
+static const uint16_t kBubbleBg = 0xE71C;
+static const uint16_t kBubbleFg = 0x18C3;
+static const uint16_t kBubblePad = 8;
+static const int kBubbleR = 12;
+// Slightly smaller than body so long transcripts fit / scroll cleanly.
+static const uint8_t kSttTextSize = 1;
 
 class SttInputWindow : public Window {
 public:
@@ -23,21 +25,21 @@ public:
             SttCancelCb onCancel, void *ctx, const SttInputOpts &opts);
 
   const char *title() const override { return title_; }
-  const char *icon()  const override { return icon_; }
+  const char *icon() const override { return icon_; }
   const char *statusIcon() const override;
   uint16_t statusIconColor() const override;
 
   void onEnter() override;
-  void onExit()  override;
-  void onTick()  override;
+  void onExit() override;
+  void onTick() override;
   bool onEvent(JoyEvent e) override;
   void drawContent(int ox, int oy) override;
 
 private:
   const char *title_ = "Input";
-  const char *icon_  = "chat";
+  const char *icon_ = "chat";
   SttConfirmCb confirmCb_ = nullptr;
-  SttCancelCb  cancelCb_  = nullptr;
+  SttCancelCb cancelCb_ = nullptr;
   void *ctx_ = nullptr;
   bool autoConfirm_ = false;
   const char *confirmLabel_ = nullptr;
@@ -46,9 +48,9 @@ private:
 
   String transcript_;
   String lastBubbleText_;
-  int16_t bubbleY_ = 0;
-  int16_t bubbleH_ = 0;
-  int16_t menuY_ = 0;
+  int bubbleY_ = 0;
+  int bubbleH_ = 0;
+  int menuY_ = 0;
   int contentH_ = 0;
   uint32_t lastUiMs_ = 0;
   MenuItem confirmItems_[3] = {};
@@ -62,9 +64,9 @@ private:
   void doConfirm();
   void doCancel();
 
-  int16_t measureBubbleH(const char *text, int16_t innerW) const;
-  void drawBubble(int16_t x, int16_t y, int16_t w, int16_t h, const char *text,
-                  int16_t textClipBottom);
+  int measureBubbleH(const char *text, int innerW) const;
+  void drawBubble(int x, int y, int w, int h, const char *text,
+                  int textClipBottom);
   void updateBubbleIfNeeded();
   void setupMenu();
   void paintMenu();
@@ -73,6 +75,7 @@ private:
   void paintListening(int ox, int oy);
   void paintError(int ox, int oy);
   int menuBlockHeight() const;
+  int fixedMenuTop() const;
 
   String currentText() const;
 
@@ -163,6 +166,7 @@ void SttInputWindow::onExit() {
 void SttInputWindow::startListening() {
   transcript_ = "";
   lastBubbleText_ = "";
+  setScrollY(0);
   setupMenu();
   gSttSession.start(onSttDone, onSttError, this, onSttDraw);
 }
@@ -215,18 +219,18 @@ bool SttInputWindow::onEvent(JoyEvent e) {
   }
 
   if (st == SttState::Done) {
-    // Up/Down scroll long transcripts; Left/Right move confirm menu.
+    // Up/Down scroll the full transcript; Left/Right move the confirm menu.
     if (e == JoyEvent::Up || e == JoyEvent::Down) {
       if (maxScroll() > 0) {
-        const int step = scrollStep();
+        const int step = textLineH(kSttTextSize);
         if (e == JoyEvent::Up) {
           scrollBy(-step);
         } else {
           scrollBy(step);
         }
         drawContentArea();
-        return true;
       }
+      return true;
     }
     if (e == JoyEvent::Ok) {
       int f = confirmMenu_.focusedIndex();
@@ -280,38 +284,50 @@ String SttInputWindow::currentText() const {
   return deepgramFinalText().length() ? deepgramFinalText() : String("(empty)");
 }
 
-int16_t SttInputWindow::measureBubbleH(const char *text, int16_t innerW) const {
+int SttInputWindow::measureBubbleH(const char *text, int innerW) const {
   TextStyle st;
-  st.size = kUiBodySize;
+  st.size = kSttTextSize;
   st.flags = TextFlagWrap;
   TextMetrics m = Text::measure(text, 0, 0, innerW, st);
   int h = m.height + 2 * kBubblePad;
-  return (int16_t)(h < 40 ? 40 : h);
+  return h < 36 ? 36 : h;
 }
 
 int SttInputWindow::menuBlockHeight() const {
   return confirmMenu_.contentHeight() + 8;
 }
 
-void SttInputWindow::drawBubble(int16_t x, int16_t y, int16_t w, int16_t h,
-                                const char *text, int16_t textClipBottom) {
+int SttInputWindow::fixedMenuTop() const {
+  return tft.height() - menuBlockHeight();
+}
+
+void SttInputWindow::drawBubble(int x, int y, int w, int h, const char *text,
+                                int textClipBottom) {
   reclaimDisplay();
   int16_t y0, y1;
-  if (!uiClipSpan(y, h, &y0, &y1)) {
+  if (!uiClipSpan((int16_t)y, (int16_t)h, &y0, &y1)) {
     return;
   }
-  const int clipBot =
-      textClipBottom > 0 ? textClipBottom : (int)tft.height();
+  // Also keep the pinned confirm menu clear.
+  if (textClipBottom > 0 && y1 > textClipBottom) {
+    y1 = (int16_t)textClipBottom;
+  }
+  if (y0 >= y1) {
+    return;
+  }
+
+  const int clipBot = textClipBottom > 0 ? textClipBottom : (int)tft.height();
   if (y >= contentTop() && y + h <= clipBot) {
     tft.fillRoundRect(x, y, w, h, kBubbleR, kBubbleBg);
   } else {
     tft.fillRect(x, y0, w, y1 - y0, kBubbleBg);
   }
+
   TextStyle st;
-  st.size = kUiBodySize;
+  st.size = kSttTextSize;
   st.color = kBubbleFg;
   st.flags = TextFlagWrap;
-  st.clipTop = contentTop();
+  st.clipTop = (int16_t)contentTop();
   st.clipBottom = (int16_t)clipBot;
   Text::draw(text, (int16_t)(x + kBubblePad), (int16_t)(y + kBubblePad),
              (int16_t)(w - 2 * kBubblePad), st);
@@ -322,11 +338,11 @@ void SttInputWindow::updateBubbleIfNeeded() {
   if (text == lastBubbleText_) {
     return;
   }
-  const int16_t maxW = (int16_t)(tft.width() - 2 * kUiPadX);
-  const int16_t innerW = (int16_t)(maxW - 2 * kBubblePad);
-  int16_t neededH = measureBubbleH(text.c_str(), innerW);
+  const int maxW = tft.width() - 2 * kUiPadX;
+  const int innerW = maxW - 2 * kBubblePad;
+  int neededH = measureBubbleH(text.c_str(), innerW);
   const int maxH = tft.height() - bubbleY_ - 8;
-  int16_t drawH = neededH > maxH ? (int16_t)maxH : neededH;
+  int drawH = neededH > maxH ? maxH : neededH;
 
   reclaimDisplay();
   uiClipSet((int16_t)contentTop(), (int16_t)tft.height());
@@ -345,13 +361,13 @@ void SttInputWindow::updateBubbleIfNeeded() {
     textY = bubbleY_ + drawH - (neededH - kBubblePad);
   }
   TextStyle st;
-  st.size = kUiBodySize;
+  st.size = kSttTextSize;
   st.color = kBubbleFg;
   st.flags = TextFlagWrap;
-  st.clipTop = bubbleY_;
+  st.clipTop = (int16_t)bubbleY_;
   st.clipBottom = (int16_t)(bubbleY_ + bubbleH_);
   Text::draw(text.c_str(), (int16_t)(kUiPadX + kBubblePad), (int16_t)textY,
-             innerW, st);
+             (int16_t)innerW, st);
   lastBubbleText_ = text;
   uiClipClear();
 }
@@ -362,24 +378,28 @@ void SttInputWindow::paintMenu() {
 }
 
 void SttInputWindow::paintBubbleAndMenu(int ox, int oy) {
-  const int16_t maxW = (int16_t)(tft.width() - 2 * kUiPadX);
-  const int16_t bubX = (int16_t)(ox + kUiPadX);
-  bubbleY_ = (int16_t)(oy + 12);
+  const int maxW = tft.width() - 2 * kUiPadX;
+  const int bubX = ox + kUiPadX;
+  const int menuH = menuBlockHeight();
+  const int menuTop = fixedMenuTop();
+
+  bubbleY_ = oy + 12;
 
   String text = currentText();
-  const int16_t innerW = (int16_t)(maxW - 2 * kBubblePad);
-  // Never clamp — long transcripts scroll (Up/Down).
+  const int innerW = maxW - 2 * kBubblePad;
+  // Full transcript height — window scroll shows the rest.
   bubbleH_ = measureBubbleH(text.c_str(), innerW);
 
-  menuY_ = (int16_t)(bubbleY_ + bubbleH_ + 12);
-  contentH_ = (menuY_ - oy) + menuBlockHeight();
+  // Trailing menuH padding so the last lines can sit above the pinned menu.
+  contentH_ = 12 + bubbleH_ + menuH;
   if (contentH_ < viewportHeight()) {
     contentH_ = viewportHeight();
   }
 
-  drawBubble(bubX, bubbleY_, maxW, bubbleH_, text.c_str(),
-             (int16_t)tft.height());
+  drawBubble(bubX, bubbleY_, maxW, bubbleH_, text.c_str(), menuTop);
   lastBubbleText_ = text;
+
+  menuY_ = menuTop;
   paintMenu();
 }
 
@@ -394,7 +414,7 @@ void SttInputWindow::paintConnecting(int ox, int oy) {
 }
 
 void SttInputWindow::paintListening(int ox, int oy) {
-  const int16_t maxW = (int16_t)(tft.width() - 2 * kUiPadX);
+  const int maxW = tft.width() - 2 * kUiPadX;
   TextStyle st;
   st.size = kUiBodySize;
   st.color = ILI9341_CYAN;
@@ -402,41 +422,41 @@ void SttInputWindow::paintListening(int ox, int oy) {
   st.maxLines = 1;
   TextMetrics m = Text::draw("Listening...", (int16_t)(ox + kUiPadX),
                               (int16_t)(oy + 10), maxW, st);
-  bubbleY_ = (int16_t)(m.nextY + 10);
-  const int16_t innerW = (int16_t)(maxW - 2 * kBubblePad);
+  bubbleY_ = m.nextY + 10;
+  const int innerW = maxW - 2 * kBubblePad;
   String text = currentText();
   const int neededH = measureBubbleH(text.c_str(), innerW);
   const int maxH = tft.height() - bubbleY_ - 8;
-  bubbleH_ = neededH > maxH ? (int16_t)maxH : (int16_t)neededH;
+  bubbleH_ = neededH > maxH ? maxH : neededH;
   contentH_ = viewportHeight();
 
-  tft.fillRoundRect((int16_t)(ox + kUiPadX), bubbleY_, maxW, bubbleH_, kBubbleR,
-                    kBubbleBg);
+  tft.fillRoundRect((int16_t)(ox + kUiPadX), (int16_t)bubbleY_, (int16_t)maxW,
+                    (int16_t)bubbleH_, kBubbleR, kBubbleBg);
   int textY = bubbleY_ + kBubblePad;
   if (neededH > bubbleH_) {
     textY = bubbleY_ + bubbleH_ - (neededH - kBubblePad);
   }
   TextStyle body;
-  body.size = kUiBodySize;
+  body.size = kSttTextSize;
   body.color = kBubbleFg;
   body.flags = TextFlagWrap;
-  body.clipTop = bubbleY_;
+  body.clipTop = (int16_t)bubbleY_;
   body.clipBottom = (int16_t)(bubbleY_ + bubbleH_);
   Text::draw(text.c_str(), (int16_t)(ox + kUiPadX + kBubblePad), (int16_t)textY,
-             innerW, body);
+             (int16_t)innerW, body);
   lastBubbleText_ = text;
 }
 
 void SttInputWindow::paintError(int ox, int oy) {
   TextStyle st;
-  st.size  = kUiBodySize;
+  st.size = kUiBodySize;
   st.color = ILI9341_RED;
   st.flags = TextFlagWrap;
   const int16_t maxW = (int16_t)(tft.width() - 2 * kUiPadX);
   TextMetrics m = Text::draw("STT error", (int16_t)(ox + kUiPadX),
                               (int16_t)(oy + 12), maxW, st);
   st.color = ILI9341_DARKGREY;
-  st.size  = kUiHintSize;
+  st.size = kUiHintSize;
   Text::draw("ok = retry   back = cancel", (int16_t)(ox + kUiPadX),
              (int16_t)(m.nextY + 12), maxW, st);
 }

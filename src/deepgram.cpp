@@ -95,6 +95,56 @@ String deepgramCopyListeningText() {
   return t;
 }
 
+// Caller must hold dgTextLock. Avoids duplicate finals from Finalize / UtteranceEnd.
+static void appendFinalSegmentUnlocked(const String &segIn) {
+  String seg = segIn;
+  seg.trim();
+  if (!seg.length()) {
+    return;
+  }
+
+  // Exact repeat of the last committed segment (common after Finalize).
+  if (seg == lastFinalText) {
+    return;
+  }
+  // Same as the whole transcript so far.
+  if (seg == finalText) {
+    return;
+  }
+  // Finalize sometimes re-sends the whole transcript; keep only the delta.
+  if (finalText.length() && seg.startsWith(finalText)) {
+    String rest = seg.substring(finalText.length());
+    rest.trim();
+    if (!rest.length() || rest == lastFinalText) {
+      return;
+    }
+    finalText += ' ';
+    finalText += rest;
+    lastFinalText = rest;
+    return;
+  }
+  // Stale late final that is only a prefix of what we already committed.
+  if (finalText.length() > seg.length() &&
+      (finalText.startsWith(seg + " ") || finalText == seg)) {
+    return;
+  }
+
+  if (finalText.length()) {
+    finalText += ' ';
+  }
+  finalText += seg;
+  lastFinalText = seg;
+}
+
+void deepgramPromoteInterim() {
+  dgTextLock();
+  if (interimText.length()) {
+    appendFinalSegmentUnlocked(interimText);
+    interimText = "";
+  }
+  dgTextUnlock();
+}
+
 static bool dgTxAlloc() {
   if (dgTxBuf) {
     return true;
@@ -237,14 +287,10 @@ static void onDgMessage(WebsocketsMessage message) {
       payload.indexOf("\"type\":\"UtteranceEnd\"") >= 0) {
     dgTextLock();
     if (interimText.length()) {
-      if (finalText.length()) {
-        finalText += ' ';
-      }
-      finalText += interimText;
-      lastFinalText = interimText;
-      Serial.print("UTTERANCE: ");
-      Serial.println(interimText);
+      appendFinalSegmentUnlocked(interimText);
       interimText = "";
+      Serial.print("UTTERANCE: ");
+      Serial.println(lastFinalText);
     }
     utteranceEndPending = true;
     dgTextUnlock();
@@ -263,11 +309,7 @@ static void onDgMessage(WebsocketsMessage message) {
   bool isFinal = jsonBoolFieldTrue(payload, "is_final");
   dgTextLock();
   if (isFinal) {
-    if (finalText.length()) {
-      finalText += ' ';
-    }
-    finalText += transcript;
-    lastFinalText = transcript;
+    appendFinalSegmentUnlocked(transcript);
     interimText = "";
     Serial.print("FINAL: ");
     Serial.println(transcript);

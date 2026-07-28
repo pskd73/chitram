@@ -1,6 +1,8 @@
 #include "status_window.h"
 
+#include "config.h"
 #include "display.h"
+#include "profiles.h"
 #include "settings.h"
 #include "ui_text.h"
 #include "windows.h"
@@ -50,9 +52,15 @@ Window *windowWifiConnecting() {
 }
 
 Window *windowGenerating() {
-  const char *model = settingsImageModelLabel(settingsImageModel());
+  const Profile *prof = profilesActive();
+  if (!prof || prof->type != ProfileType::Image) {
+    prof = profilesAtType(ProfileType::Image, 0);
+  }
+  const char *modelId =
+      (prof && prof->model[0]) ? prof->model : IMAGE_MODEL;
+  const char *label = profilesModelLabel(ProfileType::Image, modelId);
   sGenerating.configure("Generate", "image", "Generating image...",
-                        model && model[0] ? model : settingsImageModel());
+                        (label && label[0]) ? label : modelId);
   return &sGenerating;
 }
 
