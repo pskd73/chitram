@@ -592,6 +592,11 @@ bool generateAndShowImage(const String &promptIn, char *outPath, size_t outLen,
   deepgramClearText();
   displayResetTranscriptCache();
 
+  if (WiFi.status() != WL_CONNECTED && !connectWifi()) {
+    Serial.println("ERR WiFi for image gen");
+    return false;
+  }
+
   const char *model =
       (prof && prof->model[0]) ? prof->model : IMAGE_MODEL;
 
@@ -686,12 +691,18 @@ bool generateAndShowImage(const String &promptIn, char *outPath, size_t outLen,
   reclaimDisplay();
 
   Serial.println("image gen: TLS connect...");
+  // First connect after Deepgram WS often fails; one retry is enough.
   if (!client.connect(OR_HOST, 443, 20000)) {
-    Serial.println("ERR OpenRouter TLS failed");
-    if (refFile) {
-      refFile.close();
+    Serial.println("image gen: TLS retry...");
+    client.stop();
+    delay(250);
+    if (!client.connect(OR_HOST, 443, 20000)) {
+      Serial.println("ERR OpenRouter TLS failed");
+      if (refFile) {
+        refFile.close();
+      }
+      return false;
     }
-    return false;
   }
   Serial.println("image gen: TLS ok, sending body...");
 

@@ -16,8 +16,8 @@ static const uint16_t kBubbleBg = 0xE71C;
 static const uint16_t kBubbleFg = 0x18C3;
 static const uint16_t kBubblePad = 8;
 static const int kBubbleR = 12;
-// Slightly smaller than body so long transcripts fit / scroll cleanly.
-static const uint8_t kSttTextSize = 1;
+// Between tiny (1) and title — readable, still scrolls when long.
+static const uint8_t kSttTextSize = 2;
 
 class SttInputWindow : public Window {
 public:
@@ -219,18 +219,22 @@ bool SttInputWindow::onEvent(JoyEvent e) {
   }
 
   if (st == SttState::Done) {
-    // Up/Down scroll the full transcript; Left/Right move the confirm menu.
+    // Up/Down scroll when there is overflow; at edges (or no overflow) they
+    // move the confirm menu so the stick always does something.
     if (e == JoyEvent::Up || e == JoyEvent::Down) {
       if (maxScroll() > 0) {
+        const int before = scrollY();
         const int step = textLineH(kSttTextSize);
         if (e == JoyEvent::Up) {
           scrollBy(-step);
         } else {
           scrollBy(step);
         }
-        drawContentArea();
+        if (scrollY() != before) {
+          drawContentArea();
+          return true;
+        }
       }
-      return true;
     }
     if (e == JoyEvent::Ok) {
       int f = confirmMenu_.focusedIndex();
@@ -250,7 +254,7 @@ bool SttInputWindow::onEvent(JoyEvent e) {
     bool moved = false;
     if (confirmMenu_.onEvent(e, &moved)) {
       if (moved) {
-        paintMenu();
+        drawContentArea();
       }
       return true;
     }
@@ -415,14 +419,7 @@ void SttInputWindow::paintConnecting(int ox, int oy) {
 
 void SttInputWindow::paintListening(int ox, int oy) {
   const int maxW = tft.width() - 2 * kUiPadX;
-  TextStyle st;
-  st.size = kUiBodySize;
-  st.color = ILI9341_CYAN;
-  st.flags = TextFlagNoWrap | TextFlagTruncate;
-  st.maxLines = 1;
-  TextMetrics m = Text::draw("Listening...", (int16_t)(ox + kUiPadX),
-                              (int16_t)(oy + 10), maxW, st);
-  bubbleY_ = m.nextY + 10;
+  bubbleY_ = oy + 12;
   const int innerW = maxW - 2 * kBubblePad;
   String text = currentText();
   const int neededH = measureBubbleH(text.c_str(), innerW);

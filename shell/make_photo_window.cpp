@@ -26,7 +26,7 @@ static const uint16_t kBubbleBg = 0xE71C;
 static const uint16_t kBubbleFg = 0x18C3;
 static const uint16_t kBubblePad = 8;
 static const int kBubbleRadius = 12;
-static const uint8_t kMakeTextSize = 1;
+static const uint8_t kMakeTextSize = 2;
 
 enum class MakePhase : uint8_t {
   Idle,
@@ -83,6 +83,10 @@ private:
 
 static MakePhotoWindow sMakePhoto;
 
+// After a failed generate, onEnter restores Ready instead of auto-listening.
+static bool sResumeReady = false;
+static String sResumeText;
+
 void MakePhotoWindow::onListenConfirm(void *ctx, const char *text) {
   MakePhotoWindow *w = static_cast<MakePhotoWindow *>(ctx);
   String t = text ? text : "";
@@ -92,11 +96,9 @@ void MakePhotoWindow::onListenConfirm(void *ctx, const char *text) {
     return;
   }
   w->transcript_ = t;
-  w->phase_ = MakePhase::Ready;
-  w->setScrollY(0);
-  w->setupDoneMenu();
-  w->draw();
-  inputLog("make: confirmed \"%s\"", t.c_str());
+  inputLog("make: confirmed \"%s\" → generate", t.c_str());
+  // Skip the intermediate Ready/Generate page — confirm is generate.
+  w->doGenerate();
 }
 
 void MakePhotoWindow::onListenCancel(void *ctx) {
@@ -183,8 +185,10 @@ void MakePhotoWindow::goIdle() {
 
 void MakePhotoWindow::openListen() {
   const char *t = sourcePath_[0] ? "Edit" : "Make Photo";
+  SttInputOpts opts;
+  opts.confirmLabel = "Generate";
   gWindows.push(windowSttInput(t, "image", onListenConfirm, onListenCancel,
-                               this));
+                               this, opts));
 }
 
 void MakePhotoWindow::goHome() { gWindows.pop(); }
@@ -194,18 +198,23 @@ void MakePhotoWindow::doGenerate() {
     drawContentArea();
     return;
   }
+  // Copy before swapping windows / clearing Deepgram buffers.
+  String promptCopy = transcript_;
+  char savedSource[48];
+  strncpy(savedSource, sourcePath_, sizeof(savedSource) - 1);
+  savedSource[sizeof(savedSource) - 1] = '\0';
+
   inputLog("make: generate image...");
   gWindows.replaceTop(windowGenerating());
   delay(30);
 
   char path[48] = {};
-  const char *ref = sourcePath_[0] ? sourcePath_ : nullptr;
-  char savedSource[48];
-  strncpy(savedSource, sourcePath_, sizeof(savedSource) - 1);
-  savedSource[sizeof(savedSource) - 1] = '\0';
-
-  bool ok = generateAndShowImage(transcript_, path, sizeof(path), false, ref);
+  const char *ref = savedSource[0] ? savedSource : nullptr;
+  bool ok = generateAndShowImage(promptCopy, path, sizeof(path), false, ref);
   if (!ok || !path[0]) {
+    inputLog("make: generate failed — back to confirm");
+    sResumeText = promptCopy;
+    sResumeReady = true;
     if (savedSource[0]) {
       gWindows.replaceTop(windowMakePhotoModify(savedSource));
     } else {
@@ -219,6 +228,17 @@ void MakePhotoWindow::doGenerate() {
 
 void MakePhotoWindow::onEnter() {
   Window::onEnter();
+  if (sResumeReady) {
+    sResumeReady = false;
+    transcript_ = sResumeText;
+    sResumeText = "";
+    phase_ = MakePhase::Ready;
+    autoListen_ = false;
+    contentH_ = viewportHeight();
+    setScrollY(0);
+    setupDoneMenu();
+    return;
+  }
   transcript_ = "";
   phase_ = MakePhase::Idle;
   contentH_ = viewportHeight();
@@ -241,17 +261,21 @@ void MakePhotoWindow::onTick() {
 
 bool MakePhotoWindow::onEvent(JoyEvent e) {
   if (phase_ == MakePhase::Ready) {
+    // Up/Down scroll when needed; otherwise (or at edges) move the menu.
     if (e == JoyEvent::Up || e == JoyEvent::Down) {
       if (maxScroll() > 0) {
+        const int before = scrollY();
         const int step = textLineH(kMakeTextSize);
         if (e == JoyEvent::Up) {
           scrollBy(-step);
         } else {
           scrollBy(step);
         }
-        drawContentArea();
+        if (scrollY() != before) {
+          drawContentArea();
+          return true;
+        }
       }
-      return true;
     }
     if (e == JoyEvent::Ok) {
       const int focus = doneMenu_.focusedIndex();
@@ -271,7 +295,7 @@ bool MakePhotoWindow::onEvent(JoyEvent e) {
     bool moved = false;
     if (doneMenu_.onEvent(e, &moved)) {
       if (moved) {
-        paintDoneMenu();
+        drawContentArea();
       }
       return true;
     }
